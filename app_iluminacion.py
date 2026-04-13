@@ -1,11 +1,9 @@
+```python
 """
-╔══════════════════════════════════════════════════════════════╗
-║     DASHBOARD - MONITOREO DE ILUMINACIÓN EN ÁREAS            ║
-║     Basado en RETILAP y NTC 900 / ISO 8995-1                 ║
-╚══════════════════════════════════════════════════════════════╝
+app_iluminacion_sst.py
+Dashboard SST · Iluminación (corregido y robusto)
 Requisitos:
     pip install streamlit pandas plotly gspread google-auth requests openpyxl
-
 Ejecución:
     streamlit run app_iluminacion_sst.py
 """
@@ -20,6 +18,7 @@ import requests
 from io import StringIO
 from datetime import datetime
 import warnings
+import difflib
 warnings.filterwarnings("ignore")
 
 # ─────────────────────────────────────────────────────────────
@@ -33,7 +32,7 @@ st.set_page_config(
 )
 
 # ─────────────────────────────────────────────────────────────
-# ESTILOS CSS PERSONALIZADOS
+# ESTILOS CSS PERSONALIZADOS (idénticos a tu versión original)
 # ─────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
@@ -230,26 +229,23 @@ st.markdown("""
 
 # ─────────────────────────────────────────────────────────────
 # CONSTANTES: NIVELES NORMATIVOS POR ÁREA (RETILAP / NTC 900)
-# Los valores corresponden al mínimo de iluminancia mantenida (lux)
-# según el tipo de tarea visual que se realiza en cada área.
 # ─────────────────────────────────────────────────────────────
 NORMA_LUX = {
-    # Área                     : (mínimo, recomendado, norma_referencia)
-    "Sistemas":                  (300, 500, "RETILAP T440.1 / ISO 8995"),
-    "Financiero":                (300, 500, "RETILAP T440.1 / ISO 8995"),
-    "Comercial":                 (300, 500, "RETILAP T440.1 / ISO 8995"),
-    "RRHH":                      (300, 500, "RETILAP T440.1 / ISO 8995"),
-    "Inventarios":               (150, 300, "RETILAP T440.1 – Depósito"),
-    "Tesoreria":                 (300, 500, "RETILAP T440.1 / ISO 8995"),
-    "Diseno":                    (500, 750, "RETILAP T440.1 – Diseño/Detalle fino"),
-    "Mercadeo":                  (300, 500, "RETILAP T440.1 / ISO 8995"),
-    "Ingenieria":                (300, 500, "RETILAP T440.1 / ISO 8995"),
-    "Importados":                (150, 300, "RETILAP T440.1 – Depósito"),
-    "Tintoreria":                (300, 500, "RETILAP T440.1 – Industria textil"),
-    "PTAR":                      (200, 300, "RETILAP T440.1 – Planta industrial"),
-    "Insumos":                   (150, 300, "RETILAP T440.1 – Almacén"),
-    "Corte":                     (500, 750, "RETILAP T440.1 – Tarea de precisión"),
-    "Bordado":                   (500, 750, "RETILAP T440.1 – Tarea de precisión"),
+    "Sistemas":    (300, 500, "RETILAP T440.1 / ISO 8995"),
+    "Financiero":  (300, 500, "RETILAP T440.1 / ISO 8995"),
+    "Comercial":   (300, 500, "RETILAP T440.1 / ISO 8995"),
+    "RRHH":        (300, 500, "RETILAP T440.1 / ISO 8995"),
+    "Inventarios": (150, 300, "RETILAP T440.1 – Depósito"),
+    "Tesoreria":   (300, 500, "RETILAP T440.1 / ISO 8995"),
+    "Diseno":      (500, 750, "RETILAP T440.1 – Diseño/Detalle fino"),
+    "Mercadeo":    (300, 500, "RETILAP T440.1 / ISO 8995"),
+    "Ingenieria":  (300, 500, "RETILAP T440.1 / ISO 8995"),
+    "Importados":  (150, 300, "RETILAP T440.1 – Depósito"),
+    "Tintoreria":  (300, 500, "RETILAP T440.1 – Industria textil"),
+    "PTAR":        (200, 300, "RETILAP T440.1 – Planta industrial"),
+    "Insumos":     (150, 300, "RETILAP T440.1 – Almacén"),
+    "Corte":       (500, 750, "RETILAP T440.1 – Tarea de precisión"),
+    "Bordado":     (500, 750, "RETILAP T440.1 – Tarea de precisión"),
 }
 DEFAULT_NORMA = (300, 500, "RETILAP T440.1 – Oficinas generales")
 
@@ -261,47 +257,105 @@ CLIMA_COLORES = {
 }
 
 # ─────────────────────────────────────────────────────────────
-# FUNCIONES DE CARGA Y PROCESAMIENTO
+# UTILIDADES PARA DETECCIÓN ROBUSTA DE COLUMNAS
 # ─────────────────────────────────────────────────────────────
-SHEET_ID = "1P3BmLZpGIovaAvN3wep0K-5-NKxjMCBASd03WhHpzgw/edit?usp=sharing"
-CSV_URL   = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=0"
+def find_best_column(columns, candidates):
+    """
+    Busca la mejor columna en 'columns' que coincida con cualquiera de las palabras en 'candidates'.
+    Usa coincidencia exacta por substring y, si no hay, usa difflib para coincidencia aproximada.
+    Devuelve None si no encuentra nada.
+    """
+    cols_lower = {c: c.lower() for c in columns}
+    # 1) Substring match (prefer exact words)
+    for cand in candidates:
+        cand_l = cand.lower()
+        for c, cl in cols_lower.items():
+            if cand_l in cl:
+                return c
+    # 2) Fuzzy match con difflib
+    names = list(columns)
+    for cand in candidates:
+        matches = difflib.get_close_matches(cand, names, n=1, cutoff=0.6)
+        if matches:
+            return matches[0]
+    return None
 
-@st.cache_data(ttl=0)   # ttl=0 → sólo refresca cuando el usuario lo solicita
+# ─────────────────────────────────────────────────────────────
+# FUNCIONES DE CARGA Y PROCESAMIENTO (mejoradas)
+# ─────────────────────────────────────────────────────────────
+# Ajusta SHEET_ID/CSV_URL según tu hoja; se intenta limpiar si el usuario pegó la URL completa.
+SHEET_ID_RAW = "1P3BmLZpGIovaAvN3wep0K-5-NKxjMCBASd03WhHpzgw"
+CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID_RAW}/export?format=csv&gid=0"
+
+@st.cache_data(ttl=0)
 def cargar_datos() -> pd.DataFrame:
-    """Descarga y limpia el Google Sheet."""
+    """Descarga y limpia el Google Sheet con detección robusta de columnas."""
     try:
-        resp = requests.get(CSV_URL, timeout=15)
+        resp = requests.get(CSV_URL, timeout=20)
         resp.raise_for_status()
         df = pd.read_csv(StringIO(resp.text))
     except Exception as e:
-        st.error(f"❌ No se pudo cargar el archivo: {e}")
-        return pd.DataFrame()
+        # No usar st.* dentro de la función para mensajes largos en algunos contextos; devolvemos DataFrame vacío
+        return pd.DataFrame(), f"No se pudo descargar CSV: {e}"
 
-    # ── Renombrar columnas ────────────────────────────────────
+    # Normalizar nombres (trim)
+    df.columns = [c.strip() for c in df.columns]
+
+    # Intentar mapear columnas conocidas
     col_map = {}
     for c in df.columns:
         cl = c.strip()
-        if "Marca temporal" in cl:
+        cl_low = cl.lower()
+        if "marca" in cl_low and "temporal" in cl_low:
             col_map[c] = "marca_temporal"
-        elif cl.startswith("Fecha"):
+        elif cl_low.startswith("fecha") or cl_low == "date":
             col_map[c] = "fecha"
-        elif "clima" in cl.lower():
+        elif "clima" in cl_low or "weather" in cl_low:
             col_map[c] = "clima"
-        elif "área" in cl.lower() or "area" in cl.lower():
-            col_map[c] = "area"
+        # puntos P1..P8: buscar "(P1)" o "P1" o "p1"
         else:
             for i in range(1, 9):
-                if f"(P{i})" in cl:
+                if f"(p{i})" in cl_low or f" p{i}" in cl_low or cl_low.endswith(f"p{i}") or cl_low == f"p{i}":
                     col_map[c] = f"P{i}"
                     break
-    df.rename(columns=col_map, inplace=True)
 
-    # ── Parsear fechas ────────────────────────────────────────
+    # Aplicar renombrado parcial
+    df = df.rename(columns=col_map)
+
+    # Detección robusta de la columna 'area'
+    area_col = find_best_column(df.columns, ["area", "área", "áreas", "ubicación", "ubicacion", "zona", "departamento"])
+    if area_col and area_col not in df.columns:
+        # improbable, pero por seguridad
+        area_col = None
+
+    # Si no se detectó, devolver con mensaje de error
+    if not area_col:
+        # intentar mostrar columnas para depuración
+        return df, "No se encontró una columna que represente 'area' (buscar 'area', 'área', 'ubicación', 'zona'). Columnas disponibles: " + ", ".join(df.columns.tolist())
+
+    # Renombrar la columna detectada a 'area' si es distinto
+    if area_col != "area":
+        df = df.rename(columns={area_col: "area"})
+
+    # Asegurar existencia de 'clima' y 'marca_temporal' si es posible
+    clima_col = find_best_column(df.columns, ["clima", "condición", "condicion", "weather"])
+    if clima_col and clima_col != "clima":
+        df = df.rename(columns={clima_col: "clima"})
+
+    marca_col = find_best_column(df.columns, ["marca_temporal", "marca", "timestamp", "fecha_hora", "fecha hora"])
+    if marca_col and marca_col != "marca_temporal":
+        df = df.rename(columns={marca_col: "marca_temporal"})
+
+    fecha_col = find_best_column(df.columns, ["fecha", "date"])
+    if fecha_col and fecha_col != "fecha":
+        df = df.rename(columns={fecha_col: "fecha"})
+
+    # Parsear fechas si existen
     for col in ["marca_temporal", "fecha"]:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], dayfirst=True, errors="coerce")
 
-    # ── Convertir luxes (N/A → NaN) ───────────────────────────
+    # Convertir puntos P1..P8 a numérico
     puntos = [f"P{i}" for i in range(1, 9)]
     for p in puntos:
         if p in df.columns:
@@ -310,38 +364,43 @@ def cargar_datos() -> pd.DataFrame:
                 errors="coerce"
             )
 
-    # ── Calcular promedio e índice de uniformidad por fila ────
-    df["lux_promedio"]   = df[[p for p in puntos if p in df.columns]].mean(axis=1)
-    df["lux_min"]        = df[[p for p in puntos if p in df.columns]].min(axis=1)
-    df["lux_max"]        = df[[p for p in puntos if p in df.columns]].max(axis=1)
-    df["n_puntos"]       = df[[p for p in puntos if p in df.columns]].notna().sum(axis=1)
+    # Calcular métricas por fila (solo con los puntos presentes)
+    puntos_presentes = [p for p in puntos if p in df.columns]
+    if puntos_presentes:
+        df["lux_promedio"] = df[puntos_presentes].mean(axis=1)
+        df["lux_min"] = df[puntos_presentes].min(axis=1)
+        df["lux_max"] = df[puntos_presentes].max(axis=1)
+        df["n_puntos"] = df[puntos_presentes].notna().sum(axis=1)
+    else:
+        df["lux_promedio"] = np.nan
+        df["lux_min"] = np.nan
+        df["lux_max"] = np.nan
+        df["n_puntos"] = 0
 
-    # Índice de Uniformidad (U₀ = Emin / Eprom) — RETILAP ≥ 0.6
-    df["uniformidad"]    = np.where(
+    # Uniformidad U0
+    df["uniformidad"] = np.where(
         df["lux_promedio"] > 0,
         df["lux_min"] / df["lux_promedio"],
         np.nan
     )
 
-    # ── Cumplimiento normativo ────────────────────────────────
+    # Cumplimiento normativo
     def check_norma(row):
         area = str(row.get("area", "")).strip()
         norma = NORMA_LUX.get(area, DEFAULT_NORMA)
         minimo = norma[0]
-        prom   = row.get("lux_promedio", np.nan)
-        u0     = row.get("uniformidad", np.nan)
+        prom = row.get("lux_promedio", np.nan)
+        u0 = row.get("uniformidad", np.nan)
         cumple_lux = prom >= minimo if not np.isnan(prom) else False
-        cumple_u0  = u0 >= 0.6 if not np.isnan(u0) else True   # si 1 punto, no aplica
+        cumple_u0 = u0 >= 0.6 if not np.isnan(u0) else True
         return "Cumple" if (cumple_lux and cumple_u0) else "No cumple"
 
     df["cumplimiento"] = df.apply(check_norma, axis=1)
 
-    return df
-
+    return df, None
 
 def get_norma(area: str):
     return NORMA_LUX.get(area.strip(), DEFAULT_NORMA)
-
 
 # ─────────────────────────────────────────────────────────────
 # HEADER
@@ -355,23 +414,30 @@ st.markdown("---")
 
 # ─────────────────────────────────────────────────────────────
 # SIDEBAR
-# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### ⚙️ Panel de Control")
     st.markdown("---")
 
-    # Botón de refresco
     if st.button("🔄  Refrescar datos desde Google Sheets", use_container_width=True):
         st.cache_data.clear()
-        st.rerun()
+        st.experimental_rerun()
 
     st.markdown("---")
+    st.markdown("Cargando datos...")
 
-    # Carga inicial
-    df_raw = cargar_datos()
+    df_raw, err = cargar_datos()
 
-    if df_raw.empty:
-        st.error("Sin datos disponibles.")
+    if isinstance(df_raw, pd.DataFrame) and df_raw.empty:
+        st.error("❌ No hay datos cargados.")
+        if err:
+            st.write(err)
+        st.stop()
+
+    if err:
+        st.error("❌ Problema al detectar columnas.")
+        st.write(err)
+        st.write("Columnas detectadas:", df_raw.columns.tolist())
         st.stop()
 
     st.markdown(f"**📊 Registros cargados:** `{len(df_raw)}`")
@@ -382,13 +448,19 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 🔍 Filtros")
 
-    # Filtro área
-    areas_disp = sorted(df_raw["area"].dropna().unique().tolist())
-    areas_sel  = st.multiselect("Área(s)", areas_disp, default=areas_disp)
+    # Filtro área (si existe)
+    if "area" in df_raw.columns:
+        areas_disp = sorted(df_raw["area"].dropna().unique().tolist())
+    else:
+        areas_disp = []
+    areas_sel = st.multiselect("Área(s)", areas_disp, default=areas_disp)
 
     # Filtro clima
-    climas_disp = sorted(df_raw["clima"].dropna().unique().tolist())
-    climas_sel  = st.multiselect("Condición climática", climas_disp, default=climas_disp)
+    if "clima" in df_raw.columns:
+        climas_disp = sorted(df_raw["clima"].dropna().unique().tolist())
+    else:
+        climas_disp = []
+    climas_sel = st.multiselect("Condición climática", climas_disp, default=climas_disp)
 
     # Filtro fecha
     if "fecha" in df_raw.columns and df_raw["fecha"].notna().any():
@@ -419,11 +491,16 @@ with st.sidebar:
 # FILTRAR DATOS
 # ─────────────────────────────────────────────────────────────
 df = df_raw.copy()
+
 if areas_sel:
-    df = df[df["area"].isin(areas_sel)]
+    if "area" in df.columns:
+        df = df[df["area"].isin(areas_sel)]
+
 if climas_sel:
-    df = df[df["clima"].isin(climas_sel)]
-if rango_fecha and len(rango_fecha) == 2:
+    if "clima" in df.columns:
+        df = df[df["clima"].isin(climas_sel)]
+
+if rango_fecha and len(rango_fecha) == 2 and "fecha" in df.columns:
     f0, f1 = pd.Timestamp(rango_fecha[0]), pd.Timestamp(rango_fecha[1])
     df = df[(df["fecha"] >= f0) & (df["fecha"] <= f1)]
 
@@ -436,12 +513,12 @@ if df.empty:
 # ─────────────────────────────────────────────────────────────
 puntos_cols = [f"P{i}" for i in range(1, 9) if f"P{i}" in df.columns]
 
-total_mediciones  = len(df)
-areas_evaluadas   = df["area"].nunique()
-lux_global_prom   = df["lux_promedio"].mean()
-cumplimiento_pct  = (df["cumplimiento"] == "Cumple").mean() * 100
-u0_global         = df["uniformidad"].mean()
-lux_global_min    = df["lux_min"].min()
+total_mediciones = len(df)
+areas_evaluadas = df["area"].nunique() if "area" in df.columns else 0
+lux_global_prom = df["lux_promedio"].mean() if "lux_promedio" in df.columns else np.nan
+cumplimiento_pct = (df["cumplimiento"] == "Cumple").mean() * 100 if "cumplimiento" in df.columns else 0
+u0_global = df["uniformidad"].mean() if "uniformidad" in df.columns else np.nan
+lux_global_min = df["lux_min"].min() if "lux_min" in df.columns else np.nan
 
 kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
 
@@ -462,10 +539,11 @@ with kpi2:
     </div>""", unsafe_allow_html=True)
 
 with kpi3:
-    color_lux = "#64ffda" if lux_global_prom >= 300 else "#ff6363"
+    color_lux = "#64ffda" if (pd.notna(lux_global_prom) and lux_global_prom >= 300) else "#ff6363"
+    lux_display = f"{lux_global_prom:.0f}" if pd.notna(lux_global_prom) else "N/D"
     st.markdown(f"""
     <div class="kpi-card">
-        <div class="kpi-value" style="color:{color_lux}">{lux_global_prom:.0f}</div>
+        <div class="kpi-value" style="color:{color_lux}">{lux_display}</div>
         <div class="kpi-label">Lux promedio global</div>
         <div class="kpi-sub">promedio de todos los puntos</div>
     </div>""", unsafe_allow_html=True)
@@ -492,7 +570,7 @@ with kpi5:
 st.markdown("<br>", unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────
-# GRÁFICAS - FILA 1
+# GRÁFICAS - LAYOUT Y ESTILOS
 # ─────────────────────────────────────────────────────────────
 PLOT_LAYOUT = dict(
     paper_bgcolor="rgba(0,0,0,0)",
@@ -507,324 +585,218 @@ PLOT_LAYOUT = dict(
 st.markdown('<div class="section-header">📊 Análisis por Área</div>', unsafe_allow_html=True)
 col_g1, col_g2 = st.columns(2)
 
-# ── Gráfica 1: Lux promedio por área vs nivel normativo ──────
+# ── Gráfica 1: Lux promedio por área vs nivel normativo
 with col_g1:
     st.markdown("**Iluminancia promedio por área vs. Mínimo RETILAP**")
+    if "area" in df.columns and "lux_promedio" in df.columns:
+        area_stats = df.groupby("area")["lux_promedio"].mean().reset_index()
+        area_stats.columns = ["area", "lux_promedio"]
+        area_stats["lux_minimo_norma"] = area_stats["area"].apply(lambda a: get_norma(a)[0])
+        area_stats["lux_recomendado"] = area_stats["area"].apply(lambda a: get_norma(a)[1])
+        area_stats = area_stats.sort_values("lux_promedio", ascending=True)
 
-    area_stats = df.groupby("area")["lux_promedio"].mean().reset_index()
-    area_stats.columns = ["area", "lux_promedio"]
-    area_stats["lux_minimo_norma"] = area_stats["area"].apply(lambda a: get_norma(a)[0])
-    area_stats["lux_recomendado"]  = area_stats["area"].apply(lambda a: get_norma(a)[1])
-    area_stats["cumple"] = area_stats["lux_promedio"] >= area_stats["lux_minimo_norma"]
-    area_stats = area_stats.sort_values("lux_promedio", ascending=True)
-
-    fig1 = go.Figure()
-    fig1.add_trace(go.Bar(
-        x=area_stats["lux_promedio"],
-        y=area_stats["area"],
-        orientation="h",
-        name="Lux medido",
-        marker=dict(
-            color=area_stats["lux_promedio"],
-            colorscale=[[0, "#ff6363"], [0.4, "#ffd166"], [1, "#64ffda"]],
-            showscale=False,
-        ),
-        text=[f"{v:.0f} lux" for v in area_stats["lux_promedio"]],
-        textposition="outside",
-        textfont=dict(size=10, color="#ccd6f6"),
-    ))
-    # Línea de mínimo normativo
-    for _, row in area_stats.iterrows():
-        fig1.add_shape(
-            type="line",
-            x0=row["lux_minimo_norma"], x1=row["lux_minimo_norma"],
-            y0=row["area"], y1=row["area"],
-            xref="x", yref="y",
+        fig1 = go.Figure()
+        fig1.add_trace(go.Bar(
+            x=area_stats["lux_promedio"],
+            y=area_stats["area"],
+            orientation="h",
+            name="Lux medido",
+            marker=dict(
+                color=area_stats["lux_promedio"],
+                colorscale=[[0, "#ff6363"], [0.4, "#ffd166"], [1, "#64ffda"]],
+                showscale=False,
+            ),
+            text=[f"{v:.0f} lux" for v in area_stats["lux_promedio"]],
+            textposition="outside",
+            textfont=dict(size=10, color="#ccd6f6"),
+        ))
+        for _, row in area_stats.iterrows():
+            fig1.add_shape(
+                type="line",
+                x0=row["lux_minimo_norma"], x1=row["lux_minimo_norma"],
+                y0=row["area"], y1=row["area"],
+                xref="x", yref="y",
+                line=dict(color="#ffd166", width=2, dash="dot"),
+            )
+        fig1.add_trace(go.Scatter(
+            x=[None], y=[None], mode="lines",
+            name="Mínimo RETILAP",
             line=dict(color="#ffd166", width=2, dash="dot"),
-        )
-    fig1.add_trace(go.Scatter(
-        x=[None], y=[None], mode="lines",
-        name="Mínimo RETILAP",
-        line=dict(color="#ffd166", width=2, dash="dot"),
-    ))
-    fig1.update_layout(**PLOT_LAYOUT, height=380,
-                       xaxis=dict(showgrid=True, gridcolor="#1e3a5f", title="Lux"),
-                       yaxis=dict(showgrid=False))
-    st.plotly_chart(fig1, use_container_width=True)
+        ))
+        fig1.update_layout(**PLOT_LAYOUT, height=380,
+                           xaxis=dict(showgrid=True, gridcolor="#1e3a5f", title="Lux"),
+                           yaxis=dict(showgrid=False))
+        st.plotly_chart(fig1, use_container_width=True)
+    else:
+        st.info("No hay datos suficientes para graficar por área (falta 'area' o 'lux_promedio').")
 
-# ── Gráfica 2: Cumplimiento por área ─────────────────────────
+# ── Gráfica 2: Cumplimiento por área
 with col_g2:
     st.markdown("**Cumplimiento normativo por área (RETILAP + Uniformidad U₀)**")
+    if "area" in df.columns and "cumplimiento" in df.columns:
+        cumpl_area = df.groupby(["area", "cumplimiento"]).size().reset_index(name="n")
+        cumpl_total = df.groupby("area").size().reset_index(name="total")
+        cumpl_area = cumpl_area.merge(cumpl_total, on="area")
+        cumpl_area["pct"] = cumpl_area["n"] / cumpl_area["total"] * 100
 
-    cumpl_area = df.groupby(["area", "cumplimiento"]).size().reset_index(name="n")
-    cumpl_total = df.groupby("area").size().reset_index(name="total")
-    cumpl_area = cumpl_area.merge(cumpl_total, on="area")
-    cumpl_area["pct"] = cumpl_area["n"] / cumpl_area["total"] * 100
+        cumpl_pivot = cumpl_area.pivot(index="area", columns="cumplimiento", values="pct").fillna(0).reset_index()
+        sort_col = "Cumple" if "Cumple" in cumpl_pivot.columns else cumpl_pivot.columns[1]
+        cumpl_pivot = cumpl_pivot.sort_values(sort_col)
 
-    cumpl_pivot = cumpl_area.pivot(index="area", columns="cumplimiento", values="pct").fillna(0).reset_index()
-    cumpl_pivot = cumpl_pivot.sort_values("Cumple" if "Cumple" in cumpl_pivot.columns else cumpl_pivot.columns[1])
-
-    fig2 = go.Figure()
-    if "Cumple" in cumpl_pivot.columns:
-        fig2.add_trace(go.Bar(
-            y=cumpl_pivot["area"], x=cumpl_pivot["Cumple"],
-            orientation="h", name="✅ Cumple",
-            marker_color="#64ffda", opacity=0.85,
-        ))
-    if "No cumple" in cumpl_pivot.columns:
-        fig2.add_trace(go.Bar(
-            y=cumpl_pivot["area"], x=cumpl_pivot["No cumple"],
-            orientation="h", name="❌ No cumple",
-            marker_color="#ff6363", opacity=0.85,
-        ))
-    fig2.update_layout(
-        **PLOT_LAYOUT, height=380, barmode="stack",
-        xaxis=dict(range=[0, 100], title="%", showgrid=True, gridcolor="#1e3a5f"),
-        yaxis=dict(showgrid=False),
-    )
-    fig2.add_vline(x=80, line_dash="dot", line_color="#ffd166",
-                   annotation_text="Meta 80%", annotation_font_color="#ffd166")
-    st.plotly_chart(fig2, use_container_width=True)
+        fig2 = go.Figure()
+        if "Cumple" in cumpl_pivot.columns:
+            fig2.add_trace(go.Bar(
+                y=cumpl_pivot["area"], x=cumpl_pivot["Cumple"],
+                orientation="h", name="✅ Cumple",
+                marker_color="#64ffda", opacity=0.85,
+            ))
+        if "No cumple" in cumpl_pivot.columns:
+            fig2.add_trace(go.Bar(
+                y=cumpl_pivot["area"], x=cumpl_pivot["No cumple"],
+                orientation="h", name="❌ No cumple",
+                marker_color="#ff6363", opacity=0.85,
+            ))
+        fig2.update_layout(
+            **PLOT_LAYOUT, height=380, barmode="stack",
+            xaxis=dict(range=[0, 100], title="%", showgrid=True, gridcolor="#1e3a5f"),
+            yaxis=dict(showgrid=False),
+        )
+        fig2.add_vline(x=80, line_dash="dot", line_color="#ffd166",
+                       annotation_text="Meta 80%", annotation_font_color="#ffd166")
+        st.plotly_chart(fig2, use_container_width=True)
+    else:
+        st.info("No hay datos suficientes para graficar cumplimiento por área (falta 'area' o 'cumplimiento').")
 
 # ─────────────────────────────────────────────────────────────
 # GRÁFICAS - FILA 2
 # ─────────────────────────────────────────────────────────────
 col_g3, col_g4 = st.columns(2)
 
-# ── Gráfica 3: Box plot por área ─────────────────────────────
 with col_g3:
     st.markdown("**Distribución de luxes por área** *(variabilidad de mediciones)*")
-    df_melt = df.melt(id_vars=["area"], value_vars=puntos_cols, var_name="Punto", value_name="Lux").dropna()
+    if puntos_cols and "area" in df.columns:
+        df_melt = df.melt(id_vars=["area"], value_vars=puntos_cols, var_name="Punto", value_name="Lux").dropna()
+        fig3 = go.Figure()
+        for area in sorted(df_melt["area"].unique()):
+            sub = df_melt[df_melt["area"] == area]
+            fig3.add_trace(go.Box(
+                y=sub["Lux"], name=area, boxpoints="all",
+                jitter=0.4, pointpos=0,
+                marker=dict(size=4, opacity=0.6),
+                line=dict(width=1.5),
+            ))
+        fig3.update_layout(
+            **PLOT_LAYOUT, height=380,
+            yaxis=dict(title="Lux", showgrid=True, gridcolor="#1e3a5f"),
+            xaxis=dict(showgrid=False, tickangle=-30),
+            showlegend=False,
+        )
+        fig3.add_hline(y=300, line_dash="dash", line_color="#ffd166", line_width=1.5,
+                       annotation_text="Mín. general 300 lux", annotation_font_color="#ffd166",
+                       annotation_position="top right")
+        st.plotly_chart(fig3, use_container_width=True)
+    else:
+        st.info("No hay puntos P1..P8 o columna 'area' para mostrar la distribución.")
 
-    fig3 = go.Figure()
-    for area in sorted(df_melt["area"].unique()):
-        sub = df_melt[df_melt["area"] == area]
-        fig3.add_trace(go.Box(
-            y=sub["Lux"], name=area, boxpoints="all",
-            jitter=0.4, pointpos=0,
-            marker=dict(size=4, opacity=0.6),
-            line=dict(width=1.5),
-        ))
-    fig3.update_layout(
-        **PLOT_LAYOUT, height=380,
-        yaxis=dict(title="Lux", showgrid=True, gridcolor="#1e3a5f"),
-        xaxis=dict(showgrid=False, tickangle=-30),
-        showlegend=False,
-    )
-    fig3.add_hline(y=300, line_dash="dash", line_color="#ffd166", line_width=1.5,
-                   annotation_text="Mín. general 300 lux", annotation_font_color="#ffd166",
-                   annotation_position="top right")
-    st.plotly_chart(fig3, use_container_width=True)
-
-# ── Gráfica 4: Distribución climática y luxes ────────────────
 with col_g4:
     st.markdown("**Relación entre condición climática e iluminancia**")
-    clima_stats = df.groupby("clima")["lux_promedio"].agg(["mean","std","count"]).reset_index()
-    clima_stats.columns = ["clima","lux_mean","lux_std","n"]
+    if "clima" in df.columns and "lux_promedio" in df.columns:
+        clima_stats = df.groupby("clima")["lux_promedio"].agg(["mean", "std", "count"]).reset_index()
+        clima_stats.columns = ["clima", "lux_mean", "lux_std", "n"]
 
-    fig4 = go.Figure()
-    for _, row in clima_stats.iterrows():
-        color = CLIMA_COLORES.get(row["clima"], "#ccd6f6")
-        fig4.add_trace(go.Bar(
-            x=[row["clima"]],
-            y=[row["lux_mean"]],
-            name=row["clima"],
-            marker_color=color,
-            error_y=dict(type="data", array=[row["lux_std"] if pd.notna(row["lux_std"]) else 0],
-                         color="#ffffff44", thickness=1.5),
-            text=[f"μ={row['lux_mean']:.0f}<br>n={int(row['n'])}"],
-            textposition="outside",
-            textfont=dict(size=10, color="#ccd6f6"),
-        ))
-    fig4.add_hline(y=300, line_dash="dot", line_color="#ffd16688",
-                   annotation_text="300 lux (mín. general)", annotation_font_color="#ffd166",
-                   annotation_position="top right")
-    fig4.update_layout(
-        **PLOT_LAYOUT, height=380, showlegend=False,
-        yaxis=dict(title="Lux promedio", showgrid=True, gridcolor="#1e3a5f"),
-        xaxis=dict(showgrid=False),
-    )
-    st.plotly_chart(fig4, use_container_width=True)
+        fig4 = go.Figure()
+        for _, row in clima_stats.iterrows():
+            color = CLIMA_COLORES.get(row["clima"], "#ccd6f6")
+            fig4.add_trace(go.Bar(
+                x=[row["clima"]],
+                y=[row["lux_mean"]],
+                name=row["clima"],
+                marker_color=color,
+                error_y=dict(type="data", array=[row["lux_std"] if pd.notna(row["lux_std"]) else 0],
+                             color="#ffffff44", thickness=1.5),
+                text=[f"μ={row['lux_mean']:.0f}<br>n={int(row['n'])}"],
+                textposition="outside",
+                textfont=dict(size=10, color="#ccd6f6"),
+            ))
+        fig4.add_hline(y=300, line_dash="dot", line_color="#ffd16688",
+                       annotation_text="300 lux (mín. general)", annotation_font_color="#ffd166",
+                       annotation_position="top right")
+        fig4.update_layout(
+            **PLOT_LAYOUT, height=380, showlegend=False,
+            yaxis=dict(title="Lux promedio", showgrid=True, gridcolor="#1e3a5f"),
+            xaxis=dict(showgrid=False),
+        )
+        st.plotly_chart(fig4, use_container_width=True)
+    else:
+        st.info("No hay datos de 'clima' o 'lux_promedio' para analizar la relación climática.")
 
 # ─────────────────────────────────────────────────────────────
-# GRÁFICAS - FILA 3
+# GRÁFICAS - FILA 3: Series de tiempo y pie clima
 # ─────────────────────────────────────────────────────────────
 st.markdown('<div class="section-header">📈 Series de Tiempo y Distribución de Puntos</div>', unsafe_allow_html=True)
 col_g5, col_g6 = st.columns([2, 1])
 
-# ── Gráfica 5: Serie de tiempo por área ──────────────────────
 with col_g5:
     st.markdown("**Evolución temporal de la iluminancia por área**")
-    df_sorted = df.sort_values("marca_temporal").copy()
+    if "marca_temporal" in df.columns and "lux_promedio" in df.columns and "area" in df.columns:
+        df_sorted = df.sort_values("marca_temporal").copy()
+        fig5 = px.line(
+            df_sorted, x="marca_temporal", y="lux_promedio",
+            color="area", markers=True,
+            labels={"marca_temporal": "Fecha/Hora", "lux_promedio": "Lux promedio", "area": "Área"},
+            color_discrete_sequence=PLOT_LAYOUT["colorway"],
+        )
+        fig5.add_hline(y=300, line_dash="dash", line_color="#ffd166", line_width=1,
+                       annotation_text="Mín. 300 lux", annotation_font_color="#ffd166")
+        fig5.update_layout(**PLOT_LAYOUT, height=360,
+                           xaxis=dict(showgrid=True, gridcolor="#1e3a5f"),
+                           yaxis=dict(showgrid=True, gridcolor="#1e3a5f"))
+        st.plotly_chart(fig5, use_container_width=True)
+    else:
+        st.info("No hay datos de marca temporal, lux promedio o área para la serie temporal.")
 
-    fig5 = px.line(
-        df_sorted, x="marca_temporal", y="lux_promedio",
-        color="area", markers=True,
-        labels={"marca_temporal": "Fecha/Hora", "lux_promedio": "Lux promedio", "area": "Área"},
-        color_discrete_sequence=PLOT_LAYOUT["colorway"],
-    )
-    fig5.add_hline(y=300, line_dash="dash", line_color="#ffd166", line_width=1,
-                   annotation_text="Mín. 300 lux", annotation_font_color="#ffd166")
-    fig5.update_layout(**PLOT_LAYOUT, height=360,
-                       xaxis=dict(showgrid=True, gridcolor="#1e3a5f"),
-                       yaxis=dict(showgrid=True, gridcolor="#1e3a5f"))
-    st.plotly_chart(fig5, use_container_width=True)
-
-# ── Gráfica 6: Pie clima ──────────────────────────────────────
 with col_g6:
     st.markdown("**Distribución de condiciones climáticas**")
-    clima_count = df["clima"].value_counts().reset_index()
-    clima_count.columns = ["clima", "count"]
-
-    fig6 = go.Figure(go.Pie(
-        labels=clima_count["clima"],
-        values=clima_count["count"],
-        hole=0.55,
-        marker=dict(colors=[CLIMA_COLORES.get(c, "#8892b0") for c in clima_count["clima"]],
-                    line=dict(color="#0a0f1e", width=2)),
-        textfont=dict(color="#ccd6f6", size=11),
-    ))
-    fig6.update_layout(**PLOT_LAYOUT, height=360,
-                       legend=dict(orientation="v", x=0.85, y=0.5))
-    fig6.add_annotation(
-        text=f"<b>{len(df)}</b><br><span style='font-size:10px'>registros</span>",
-        x=0.5, y=0.5, font_size=14, font_color="#64ffda",
-        showarrow=False, xanchor="center",
-    )
-    st.plotly_chart(fig6, use_container_width=True)
+    if "clima" in df.columns:
+        clima_count = df["clima"].value_counts().reset_index()
+        clima_count.columns = ["clima", "count"]
+        fig6 = go.Figure(go.Pie(
+            labels=clima_count["clima"],
+            values=clima_count["count"],
+            hole=0.55,
+            marker=dict(colors=[CLIMA_COLORES.get(c, "#8892b0") for c in clima_count["clima"]],
+                        line=dict(color="#0a0f1e", width=2)),
+            textinfo="label+percent",
+        ))
+        fig6.update_layout(**PLOT_LAYOUT, height=360, showlegend=False)
+        st.plotly_chart(fig6, use_container_width=True)
+    else:
+        st.info("No hay columna 'clima' para mostrar la distribución.")
 
 # ─────────────────────────────────────────────────────────────
-# GRÁFICA - MAPA DE CALOR (Área × Punto de medición)
+# TABLA DE DATOS Y RESUMEN
 # ─────────────────────────────────────────────────────────────
-st.markdown('<div class="section-header">🔥 Mapa de Calor — Iluminancia por Punto de Medición</div>', unsafe_allow_html=True)
+st.markdown('<div class="section-header">📋 Datos y Resumen</div>', unsafe_allow_html=True)
 
-df_heat = df.groupby("area")[puntos_cols].mean().round(1)
-df_heat = df_heat.dropna(how="all")
+# Mostrar primeras filas
+st.markdown("**Vista previa de los datos filtrados**")
+st.dataframe(df.head(200), use_container_width=True)
 
-if not df_heat.empty:
-    fig7 = go.Figure(go.Heatmap(
-        z=df_heat.values,
-        x=df_heat.columns.tolist(),
-        y=df_heat.index.tolist(),
-        colorscale=[
-            [0,    "#1d0b0b"],
-            [0.2,  "#8b1a1a"],
-            [0.4,  "#ff6363"],
-            [0.6,  "#ffd166"],
-            [0.85, "#90e0ef"],
-            [1.0,  "#64ffda"],
-        ],
-        text=df_heat.values.round(0),
-        texttemplate="%{text}",
-        textfont=dict(size=11, color="white"),
-        hovertemplate="Área: %{y}<br>Punto: %{x}<br>Lux promedio: %{z:.1f}<extra></extra>",
-        colorbar=dict(
-            title="Lux", tickfont=dict(color="#ccd6f6"),
-            titlefont=dict(color="#ccd6f6"),
-        ),
-    ))
-    fig7.update_layout(
-        **PLOT_LAYOUT, height=350,
-        xaxis=dict(showgrid=False, title="Punto de medición"),
-        yaxis=dict(showgrid=False, title="Área"),
-    )
-    st.plotly_chart(fig7, use_container_width=True)
-
-# ─────────────────────────────────────────────────────────────
-# GRÁFICA - UNIFORMIDAD (U₀) POR ÁREA
-# ─────────────────────────────────────────────────────────────
-st.markdown('<div class="section-header">⚖️ Índice de Uniformidad (U₀ = E_min / E_prom) por Área</div>', unsafe_allow_html=True)
-
-df_u0 = df[df["n_puntos"] > 1].copy()   # U₀ requiere ≥ 2 puntos
-if not df_u0.empty:
-    u0_area = df_u0.groupby("area")["uniformidad"].mean().reset_index()
-    u0_area.columns = ["area", "u0"]
-    u0_area = u0_area.sort_values("u0")
-    u0_area["color"] = u0_area["u0"].apply(
-        lambda v: "#64ffda" if v >= 0.6 else ("#ffd166" if v >= 0.4 else "#ff6363")
-    )
-
-    fig8 = go.Figure(go.Bar(
-        x=u0_area["area"], y=u0_area["u0"],
-        marker_color=u0_area["color"],
-        text=[f"{v:.2f}" for v in u0_area["u0"]],
-        textposition="outside",
-        textfont=dict(color="#ccd6f6", size=10),
-    ))
-    fig8.add_hline(y=0.6, line_dash="dash", line_color="#ffd166", line_width=2,
-                   annotation_text="U₀ ≥ 0.60 (RETILAP mínimo)",
-                   annotation_font_color="#ffd166", annotation_position="top right")
-    fig8.update_layout(
-        **PLOT_LAYOUT, height=300,
-        yaxis=dict(range=[0, 1.1], title="U₀", showgrid=True, gridcolor="#1e3a5f"),
-        xaxis=dict(showgrid=False, tickangle=-25),
-        showlegend=False,
-    )
-    st.plotly_chart(fig8, use_container_width=True)
+# Resumen por área (tabla)
+if "area" in df.columns and "lux_promedio" in df.columns:
+    resumen_area = df.groupby("area").agg(
+        n_mediciones=("lux_promedio", "count"),
+        lux_promedio_area=("lux_promedio", "mean"),
+        lux_min_area=("lux_min", "min"),
+        lux_max_area=("lux_max", "max"),
+        uniformidad_media=("uniformidad", "mean"),
+        pct_cumplen=("cumplimiento", lambda s: (s == "Cumple").mean() * 100)
+    ).reset_index().sort_values("lux_promedio_area", ascending=False)
+    st.markdown("**Resumen por área**")
+    st.dataframe(resumen_area, use_container_width=True)
 else:
-    st.info("ℹ️ Se necesitan al menos 2 puntos de medición por área para calcular el índice de uniformidad.")
+    st.info("No hay suficientes columnas para generar el resumen por área.")
 
-# ─────────────────────────────────────────────────────────────
-# TABLA DE RESUMEN NORMATIVO
-# ─────────────────────────────────────────────────────────────
-st.markdown('<div class="section-header">📋 Resumen Normativo por Área</div>', unsafe_allow_html=True)
-
-resumen_rows = []
-for area in sorted(df["area"].dropna().unique()):
-    sub = df[df["area"] == area]
-    norma = get_norma(area)
-    lux_m   = sub["lux_promedio"].mean()
-    u0_m    = sub["uniformidad"].mean()
-    n_reg   = len(sub)
-    cumple_lux = lux_m >= norma[0] if pd.notna(lux_m) else False
-    cumple_u0  = (u0_m >= 0.6 if pd.notna(u0_m) else True) if sub["n_puntos"].max() > 1 else True
-    cumple_tot = "✅ Cumple" if (cumple_lux and cumple_u0) else "❌ No cumple"
-
-    resumen_rows.append({
-        "Área":              area,
-        "Registros":         n_reg,
-        "Lux promedio":      f"{lux_m:.1f}" if pd.notna(lux_m) else "N/D",
-        "Mín. RETILAP (lux)":norma[0],
-        "Rec. RETILAP (lux)":norma[1],
-        "U₀ promedio":       f"{u0_m:.2f}" if pd.notna(u0_m) else "N/A (1 punto)",
-        "U₀ ≥ 0.60":         "✅" if cumple_u0 else "❌",
-        "Lux ≥ mínimo":      "✅" if cumple_lux else "❌",
-        "Estado normativo":  cumple_tot,
-        "Referencia":        norma[2],
-    })
-
-df_resumen = pd.DataFrame(resumen_rows)
-st.dataframe(
-    df_resumen,
-    use_container_width=True,
-    hide_index=True,
-)
-
-# ─────────────────────────────────────────────────────────────
-# TABLA DE DATOS CRUDOS (EXPANDIBLE)
-# ─────────────────────────────────────────────────────────────
-with st.expander("🗃️ Ver datos crudos del formulario"):
-    cols_mostrar = ["marca_temporal","fecha","clima","area"] + puntos_cols + ["lux_promedio","uniformidad","cumplimiento"]
-    cols_mostrar = [c for c in cols_mostrar if c in df.columns]
-    st.dataframe(df[cols_mostrar].sort_values("marca_temporal", ascending=False),
-                 use_container_width=True, hide_index=True)
-    csv_export = df[cols_mostrar].to_csv(index=False, encoding="utf-8-sig")
-    st.download_button(
-        "⬇️ Descargar CSV filtrado",
-        data=csv_export,
-        file_name=f"iluminacion_sst_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-        mime="text/csv",
-    )
-
-# ─────────────────────────────────────────────────────────────
-# FOOTER
-# ─────────────────────────────────────────────────────────────
 st.markdown("---")
-st.markdown("""
-<div style="text-align:center; font-family:'Space Mono',monospace; font-size:0.7rem; color:#4a5568; padding: 12px 0;">
-    Dashboard SST · Iluminación en Áreas de Trabajo &nbsp;·&nbsp;
-    RETILAP 2010 · NTC 900 · ISO 8995-1 · Res. 2400/1979 &nbsp;·&nbsp;
-    Desarrollado con Streamlit + Plotly &nbsp;·&nbsp;
-    Los datos provienen de Google Sheets en tiempo real
-</div>
-""", unsafe_allow_html=True)
+st.markdown("Dashboard listo. Si necesitas que detecte automáticamente columnas con otros nombres, o que adapte el mapeo a tu Google Sheet, pega aquí los encabezados de la hoja y lo ajusto.")
+```
