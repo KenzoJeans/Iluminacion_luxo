@@ -242,10 +242,6 @@ with st.sidebar:
         <div style="font-weight:700; color:#ffd166;">🇨🇴 RETILAP 2010</div>
         <div style="margin-top:6px;">Tabla 440.1 — Niveles de iluminancia según tipo de tarea. Uniformidad U₀ ≥ 0.6</div>
     </div>
-    <div class="norma-box" style="margin-top:8px;">
-        <div style="font-weight:700; color:#ffd166;">🌐 ISO 8995-1</div>
-        <div style="margin-top:6px;">Alumbrado de lugares de trabajo interiores. Criterios de cantidad y calidad.</div>
-    </div>
     """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────
