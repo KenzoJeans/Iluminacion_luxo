@@ -218,8 +218,8 @@ def get_norma(area: str):
 # ─────────────────────────────────────────────────────────────
 # INTERFAZ: entrada de URL/ID y fallback por carga manual
 # ─────────────────────────────────────────────────────────────
-st.markdown('<div class="main-title">💡 Dashboard SST · Iluminación en Áreas de Trabajo</div>', unsafe_allow_html=True)
-st.markdown('<div class="subtitle">RETILAP · NTC 900 · ISO 8995-1 · Monitoreo</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-title">💡 Dashboard · Iluminación en Áreas de Trabajo</div>', unsafe_allow_html=True)
+st.markdown('<div class="subtitle">RETILAP · Monitoreo</div>', unsafe_allow_html=True)
 st.markdown("---")
 
 with st.sidebar:
@@ -468,7 +468,7 @@ with col_g1:
 
 # ── Gráfica 2: Cumplimiento por área
 with col_g2:
-    st.markdown("**Cumplimiento normativo por área (RETILAP + Uniformidad U₀)**")
+    st.markdown("**Cumplimiento normativo por área**")
     if "area" in df.columns and "cumplimiento" in df.columns:
         cumpl_area = df.groupby(["area", "cumplimiento"]).size().reset_index(name="n")
         cumpl_total = df.groupby("area").size().reset_index(name="total")
