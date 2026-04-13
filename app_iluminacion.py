@@ -26,7 +26,7 @@ warnings.filterwarnings("ignore")
 # CONFIGURACIÓN DE PÁGINA
 # ─────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Dashboard · Iluminación",
+    page_title="Dashboard SST · Iluminación",
     page_icon="💡",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -83,11 +83,13 @@ CLIMA_COLORES = {
 # ─────────────────────────────────────────────────────────────
 def find_best_column(columns, candidates):
     cols_lower = {c: c.lower() for c in columns}
+    # 1) Substring match
     for cand in candidates:
         cand_l = cand.lower()
         for c, cl in cols_lower.items():
             if cand_l in cl:
                 return c
+    # 2) Fuzzy match con difflib
     names = list(columns)
     for cand in candidates:
         matches = difflib.get_close_matches(cand, names, n=1, cutoff=0.6)
@@ -121,6 +123,7 @@ def try_download_csv(urls, timeout=15):
             resp = requests.get(u, timeout=timeout)
             resp.raise_for_status()
             text = resp.text
+            # detectar si la respuesta es HTML de error
             if text.strip().lower().startswith("<!doctype html") or ("error" in text.lower() and "google" in text.lower()):
                 last_err = f"Respuesta no es CSV válida desde {u}"
                 continue
@@ -218,8 +221,8 @@ def get_norma(area: str):
 # ─────────────────────────────────────────────────────────────
 # INTERFAZ: entrada de URL/ID y fallback por carga manual
 # ─────────────────────────────────────────────────────────────
-st.markdown('<div class="main-title">💡 Dashboard · Iluminación en Áreas de Trabajo</div>', unsafe_allow_html=True)
-st.markdown('<div class="subtitle">RETILAP · Monitoreo</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-title">💡 Dashboard SST · Iluminación en Áreas de Trabajo</div>', unsafe_allow_html=True)
+st.markdown('<div class="subtitle">RETILAP · NTC 900 · ISO 8995-1 · Monitoreo</div>', unsafe_allow_html=True)
 st.markdown("---")
 
 with st.sidebar:
@@ -227,9 +230,10 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("Introduce el ID o la URL de Google Sheets (opcional). Si la descarga falla, puedes subir el CSV manualmente.")
     sheet_input = st.text_input("ID o URL de Google Sheets", value="1P3BmLZpGIovaAvN3wep0K-5-NKxjMCBASd03WhHpzgw")
+    # Refresh button: clear cache and rely on Streamlit's automatic rerun on button click.
     if st.button("🔄 Intentar descargar desde Google Sheets", use_container_width=True):
-        st.session_state["_try_download"] = True
-        st.experimental_rerun()
+        st.cache_data.clear()
+        st.experimental_set_query_params(_refresh=datetime.now().timestamp())  # small harmless state change to force rerun in some environments
 
     st.markdown("---")
     st.markdown("O sube un archivo CSV exportado desde Google Sheets")
@@ -241,6 +245,10 @@ with st.sidebar:
     <div class="norma-box">
         <div style="font-weight:700; color:#ffd166;">🇨🇴 RETILAP 2010</div>
         <div style="margin-top:6px;">Tabla 440.1 — Niveles de iluminancia según tipo de tarea. Uniformidad U₀ ≥ 0.6</div>
+    </div>
+    <div class="norma-box" style="margin-top:8px;">
+        <div style="font-weight:700; color:#ffd166;">🌐 ISO 8995-1</div>
+        <div style="margin-top:6px;">Alumbrado de lugares de trabajo interiores. Criterios de cantidad y calidad.</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -265,8 +273,8 @@ if uploaded_file is not None:
             st.error(f"No se pudo leer el archivo subido: {e}")
             st.stop()
 
-# 2) intento de descarga si el usuario pulsó el botón o si no hay archivo pero hay input
-elif st.session_state.get("_try_download", False) or sheet_input:
+# 2) intento de descarga si hay input en sheet_input
+if csv_text is None and sheet_input:
     urls = build_possible_csv_urls(sheet_input)
     if urls:
         csv_text, download_error = try_download_csv(urls, timeout=15)
@@ -464,7 +472,7 @@ with col_g1:
 
 # ── Gráfica 2: Cumplimiento por área
 with col_g2:
-    st.markdown("**Cumplimiento normativo por área**")
+    st.markdown("**Cumplimiento normativo por área (RETILAP + Uniformidad U₀)**")
     if "area" in df.columns and "cumplimiento" in df.columns:
         cumpl_area = df.groupby(["area", "cumplimiento"]).size().reset_index(name="n")
         cumpl_total = df.groupby("area").size().reset_index(name="total")
@@ -651,7 +659,7 @@ def to_excel_bytes(df_main, df_summary=None):
             "Áreas incluidas": [df_main["area"].nunique() if "area" in df_main.columns else 0]
         })
         meta.to_excel(writer, sheet_name="Meta", index=False)
-        # NO llamar writer.save() ni writer.close(); el context manager se encarga de guardar
+        # El context manager guarda automáticamente; no llamar writer.save()
     return output.getvalue()
 
 st.markdown("### 📥 Exportar resultados")
