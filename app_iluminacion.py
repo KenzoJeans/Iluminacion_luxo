@@ -1,686 +1,393 @@
-"""
-app_iluminacion_sst.py
-Dashboard SST · Iluminación (versión completa, corregida y con exportación a Excel)
+import re
+from datetime import datetime
+from io import StringIO
+from typing import Tuple
 
-Requisitos:
-    pip install streamlit pandas plotly requests openpyxl
-
-Ejecución:
-    streamlit run app_iluminacion_sst.py
-"""
-
-import streamlit as st
-import pandas as pd
 import numpy as np
+import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from io import StringIO, BytesIO
 import requests
-import warnings
-import difflib
-from datetime import datetime
+import streamlit as st
 
-warnings.filterwarnings("ignore")
-
-# ─────────────────────────────────────────────────────────────
-# CONFIGURACIÓN DE PÁGINA
-# ─────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────
+# CONFIGURACIÓN
+# ───────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Dashboard SST · Iluminación",
+    page_title="Dashboard Iluminación RETILAP",
     page_icon="💡",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# ─────────────────────────────────────────────────────────────
-# ESTILOS CSS (resumen para mantener legibilidad)
-# ─────────────────────────────────────────────────────────────
-st.markdown("""
-<style>
-    @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Sora:wght@300;400;600;800&display=swap');
-    .main-title { font-family: 'Sora', sans-serif; font-size: 2.0rem; font-weight:800; color: #64ffda; margin:0; }
-    .subtitle { font-family: 'Space Mono', monospace; color:#8892b0; font-size:0.8rem; margin-top:4px; }
-    .kpi-card { background: linear-gradient(135deg, #112240 0%, #0d2137 100%); border-radius:10px; padding:14px; color:#ccd6f6; text-align:center; }
-    .kpi-value { font-family: 'Space Mono', monospace; font-size:1.6rem; color:#64ffda; font-weight:700; }
-    .kpi-label { font-size:0.8rem; color:#8892b0; text-transform:uppercase; letter-spacing:1px; }
-    .section-header { font-family: 'Sora', sans-serif; font-size:1.05rem; font-weight:600; color:#ccd6f6; border-left:3px solid #64ffda; padding-left:10px; margin-top:18px; margin-bottom:8px; }
-    .norma-box { background:#0a2341; border-left:3px solid #ffd166; padding:10px; border-radius:6px; color:#8892b0; }
-    hr { border-color:#1e3a5f; }
-</style>
-""", unsafe_allow_html=True)
+# Reemplaza por tu ID de Google Sheet
+SHEET_ID = "1Rh7MbE07hMgeyFH4vvuNNpDzRVAXU0LateoBPbwg_78"
+CSV_URLS = [
+    f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=0",
+    f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&gid=0",
+]
+SHEET_LINK = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit"
 
-# ─────────────────────────────────────────────────────────────
-# CONSTANTES: NIVELES NORMATIVOS POR ÁREA (RETILAP / NTC 900)
-# ─────────────────────────────────────────────────────────────
-NORMA_LUX = {
-    "Sistemas":    (300, 500, "RETILAP T440.1 / ISO 8995"),
-    "Financiero":  (300, 500, "RETILAP T440.1 / ISO 8995"),
-    "Comercial":   (300, 500, "RETILAP T440.1 / ISO 8995"),
-    "RRHH":        (300, 500, "RETILAP T440.1 / ISO 8995"),
-    "Inventarios": (300, 500, "RETILAP T440.1 – Depósito"),
-    "Tesoreria":   (300, 500, "RETILAP T440.1 / ISO 8995"),
-    "Diseno":      (500, 750, "RETILAP T440.1 – Diseño/Detalle fino"),
-    "Mercadeo":    (300, 500, "RETILAP T440.1 / ISO 8995"),
-    "Ingenieria":  (300, 500, "RETILAP T440.1 / ISO 8995"),
-    "Importados":  (100, 300, "RETILAP T440.1 – Depósito"),
-    "Tintoreria":  (200, 500, "RETILAP T440.1 – Industria textil"),
-    "PTAR":        (200, 300, "RETILAP T440.1 – Planta industrial"),
-    "Insumos":     (100, 300, "RETILAP T440.1 – Almacén"),
-    "Corte":       (500, 750, "RETILAP T440.1 – Tarea de precisión"),
-    "Bordado":     (500, 750, "RETILAP T440.1 – Tarea de precisión"),
-}
-DEFAULT_NORMA = (300, 500, "RETILAP T440.1 – Oficinas generales")
+NUM_PUNTOS = 8
 
-CLIMA_COLORES = {
-    "Soleado":            "#ffd166",
-    "Mayormente nublado": "#90e0ef",
-    "Nublado":            "#8892b0",
-    "Lluvioso":           "#00b4d8",
+RETILAP = {
+    "oficinas": 300,
+    "comedores": 200,
+    "zonas de descanso": 200,
+    "operación": 200,
+    "operacion": 200,
+    "detalles finos": 500,
+    "detalles moderados": 150,
+    "lavado": 300,
 }
 
-# ─────────────────────────────────────────────────────────────
-# UTILIDADES PARA DETECCIÓN ROBUSTA DE COLUMNAS
-# ─────────────────────────────────────────────────────────────
-def find_best_column(columns, candidates):
-    cols_lower = {c: c.lower() for c in columns}
-    # 1) Substring match
-    for cand in candidates:
-        cand_l = cand.lower()
-        for c, cl in cols_lower.items():
-            if cand_l in cl:
-                return c
-    # 2) Fuzzy match con difflib
-    names = list(columns)
-    for cand in candidates:
-        matches = difflib.get_close_matches(cand, names, n=1, cutoff=0.6)
-        if matches:
-            return matches[0]
+RETILAP_DISPLAY = {
+    "Oficinas": 300,
+    "Comedores / zonas de descanso": 200,
+    "Operación": 200,
+    "Detalles finos": 500,
+    "Detalles moderados": 150,
+    "Lavado": 300,
+}
+
+# ───────────────────────────────────────────────────────────────
+# UTILIDADES DE CARGA
+# ───────────────────────────────────────────────────────────────
+@st.cache_data(ttl=0, show_spinner=False)
+def descargar_csv_desde_urls(urls: list[str], timeout: int = 20) -> Tuple[pd.DataFrame | None, str | None]:
+    """
+    Intenta descargar CSV desde una lista de URLs (ordenadas por preferencia).
+    Retorna (df, error_message). No lanza excepción al llamador.
+    """
+    last_err = None
+    headers = {"User-Agent": "Mozilla/5.0 (compatible)"}
+    for url in urls:
+        try:
+            resp = requests.get(url, timeout=timeout, headers=headers)
+            resp.raise_for_status()
+            # Intentar leer como CSV
+            df = pd.read_csv(StringIO(resp.text))
+            return df, None
+        except Exception as exc:
+            last_err = f"{type(exc).__name__}: {exc}"
+            continue
+    return None, last_err or "No se pudo descargar desde las URLs provistas."
+
+
+def cargar_datos_interactivo() -> Tuple[pd.DataFrame | None, str | None]:
+    """
+    Flujo de carga robusto:
+      1) Intenta descargar desde Google Sheets (dos endpoints).
+      2) Si falla, permite al usuario subir un archivo CSV o pegar el CSV.
+    """
+    df, err = descargar_csv_desde_urls(CSV_URLS)
+    if df is not None:
+        return df, None
+
+    # Si llegamos aquí, la descarga falló: ofrecer uploader/paste
+    st.warning(
+        "No se pudo descargar el CSV desde Google Sheets automáticamente.\n"
+        "Esto puede deberse a que la hoja no es pública o a restricciones del enlace."
+    )
+    st.info("Opciones: 1) Subir un archivo CSV exportado del Google Sheet. 2) Pegar el contenido CSV en el cuadro de texto.")
+
+    uploaded = st.file_uploader("Sube el CSV exportado (opción recomendada)", type=["csv"])
+    if uploaded is not None:
+        try:
+            df = pd.read_csv(uploaded)
+            return df, None
+        except Exception as exc:
+            return None, f"Error leyendo el CSV subido: {exc}"
+
+    pasted = st.text_area("O pega aquí el contenido CSV (si no subiste archivo)", height=200)
+    if pasted and pasted.strip():
+        try:
+            df = pd.read_csv(StringIO(pasted))
+            return df, None
+        except Exception as exc:
+            return None, f"Error leyendo el CSV pegado: {exc}"
+
+    # Si no se subió ni pegó nada, devolver el error original de descarga
+    return None, err or "No se proporcionó CSV manualmente."
+
+
+# ───────────────────────────────────────────────────────────────
+# NORMALIZACIÓN DE ENCABEZADOS Y DATOS
+# ───────────────────────────────────────────────────────────────
+def _buscar_col_por_patron(cols, patrones):
+    for pat in patrones:
+        for c in cols:
+            try:
+                if re.search(pat, str(c), flags=re.IGNORECASE):
+                    return c
+            except re.error:
+                continue
     return None
 
-def build_possible_csv_urls(sheet_input: str):
-    s = sheet_input.strip()
-    urls = []
-    sheet_id = None
-    if "docs.google.com" in s:
-        try:
-            part = s.split("/d/")[1]
-            sheet_id = part.split("/")[0]
-        except Exception:
-            sheet_id = None
-    else:
-        sheet_id = s if s else None
 
-    if sheet_id:
-        urls.append(f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid=0")
-        urls.append(f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&gid=0")
-        urls.append(f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv")
-    return urls
+def limpiar_columnas(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Normaliza encabezados largos del formulario a nombres cortos:
+      Fecha, Area, Cumple_P1..P8, Lux_P1..P8
+    """
+    original_cols = df.columns.tolist()
+    mapping: dict[str, str] = {}
 
-def try_download_csv(urls, timeout=15):
-    last_err = None
-    for u in urls:
-        try:
-            resp = requests.get(u, timeout=timeout)
-            resp.raise_for_status()
-            text = resp.text
-            # detectar si la respuesta es HTML de error
-            if text.strip().lower().startswith("<!doctype html") or ("error" in text.lower() and "google" in text.lower()):
-                last_err = f"Respuesta no es CSV válida desde {u}"
-                continue
-            return text, None
-        except requests.HTTPError as he:
-            code = he.response.status_code if he.response is not None else "HTTPError"
-            last_err = f"HTTP {code} desde {u}"
-        except Exception as e:
-            last_err = f"Error descargando {u}: {e}"
-    return None, last_err
+    # Detectar Fecha
+    col_fecha = _buscar_col_por_patron(original_cols, [r"\bfecha\b", r"\bdate\b"])
+    if col_fecha:
+        mapping[col_fecha] = "Fecha"
 
-# ─────────────────────────────────────────────────────────────
-# PARSEO Y LIMPIEZA DE CSV
-# ─────────────────────────────────────────────────────────────
-@st.cache_data(ttl=0)
-def parse_csv_text_to_df(csv_text: str):
-    df = pd.read_csv(StringIO(csv_text))
-    df.columns = [c.strip() for c in df.columns]
+    # Detectar Area
+    col_area = _buscar_col_por_patron(
+        original_cols,
+        [r"seleccione.*area", r"\barea\b", r"\bárea\b", r"ubicaci", r"depart"]
+    )
+    if col_area:
+        mapping[col_area] = "Area"
 
-    # Intentar renombrar columnas conocidas
-    col_map = {}
-    for c in df.columns:
-        cl_low = c.lower()
-        if "marca" in cl_low and "temporal" in cl_low:
-            col_map[c] = "marca_temporal"
-        elif cl_low.startswith("fecha") or cl_low == "date":
-            col_map[c] = "fecha"
-        elif "clima" in cl_low or "weather" in cl_low:
-            col_map[c] = "clima"
+    # Detectar columnas de Cumple y Lux por patrón
+    for col in original_cols:
+        col_l = str(col).lower()
+
+        # Cumple: contiene "cumple" o "indique si"
+        if ("cumple" in col_l or "indique si" in col_l) and "lux" not in col_l and "valor" not in col_l:
+            m = re.search(r"punto\s*(\d+)", col_l) or re.search(r"\(p(\d+)\)", col_l) or re.search(r"p(\d+)", col_l)
+            p = m.group(1) if m else None
+            if p:
+                mapping[col] = f"Cumple_P{p}"
+            else:
+                for i in range(1, NUM_PUNTOS + 1):
+                    key = f"Cumple_P{i}"
+                    if key not in mapping.values():
+                        mapping[col] = key
+                        break
+
+        # Lux: buscar "lux" o "luxómetro" o "valor dado"
+        elif "lux" in col_l or "luxómetro" in col_l or "valor dado" in col_l or "luxometro" in col_l:
+            m = re.search(r"punto\s*(\d+)", col_l) or re.search(r"\(p(\d+)\)", col_l) or re.search(r"p(\d+)", col_l)
+            p = m.group(1) if m else None
+            if p:
+                mapping[col] = f"Lux_P{p}"
+            else:
+                for i in range(1, NUM_PUNTOS + 1):
+                    key = f"Lux_P{i}"
+                    if key not in mapping.values():
+                        mapping[col] = key
+                        break
+
+    # Renombrar
+    if mapping:
+        df = df.rename(columns=mapping)
+
+    # Fecha
+    if "Fecha" in df.columns:
+        df["Fecha"] = pd.to_datetime(df["Fecha"], dayfirst=True, errors="coerce")
+
+    # Si no existe 'Area', intentar inferir o crear con 'Desconocida'
+    if "Area" not in df.columns:
+        inferred = _buscar_col_por_patron(original_cols, [r"\bubicaci", r"\bdepart", r"\barea\b", r"\bárea\b"])
+        if inferred:
+            df = df.rename(columns={inferred: "Area"})
         else:
-            for i in range(1, 9):
-                if f"(p{i})" in cl_low or f" p{i}" in cl_low or cl_low.endswith(f"p{i}") or cl_low == f"p{i}":
-                    col_map[c] = f"P{i}"
-                    break
-    df = df.rename(columns=col_map)
+            df["Area"] = "Desconocida"
 
-    # Detectar columna area de forma robusta
-    area_col = find_best_column(df.columns, ["area", "área", "ubicación", "ubicacion", "zona", "departamento", "sede"])
-    if area_col and area_col != "area":
-        df = df.rename(columns={area_col: "area"})
+    df["Area"] = df["Area"].astype(str).str.strip()
 
-    # Detectar clima, marca_temporal, fecha
-    clima_col = find_best_column(df.columns, ["clima", "condición", "condicion", "weather"])
-    if clima_col and clima_col != "clima":
-        df = df.rename(columns={clima_col: "clima"})
-    marca_col = find_best_column(df.columns, ["marca_temporal", "marca", "timestamp", "fecha_hora", "fecha hora"])
-    if marca_col and marca_col != "marca_temporal":
-        df = df.rename(columns={marca_col: "marca_temporal"})
-    fecha_col = find_best_column(df.columns, ["fecha", "date"])
-    if fecha_col and fecha_col != "fecha":
-        df = df.rename(columns={fecha_col: "fecha"})
-
-    # Parsear fechas
-    for col in ["marca_temporal", "fecha"]:
+    # Lux → numérico
+    for p in range(1, NUM_PUNTOS + 1):
+        col = f"Lux_P{p}"
         if col in df.columns:
-            df[col] = pd.to_datetime(df[col], dayfirst=True, errors="coerce")
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # Convertir puntos P1..P8
-    puntos = [f"P{i}" for i in range(1, 9)]
-    for p in puntos:
-        if p in df.columns:
-            df[p] = pd.to_numeric(df[p].astype(str).str.strip().str.replace(",", ".").replace("N/A", np.nan), errors="coerce")
+    # Cumple → normalizar Sí/No/N/A a "Cumple"/"No cumple"/NaN
+    cumple_true = {"sí", "si", "s", "cumple", "yes", "y"}
+    cumple_false = {"no", "n", "no cumple", "nocumple"}
+    na_vals = {"n/a", "na", "-", "—", "sin dato", "s/d", ""}
 
-    puntos_presentes = [p for p in puntos if p in df.columns]
-    if puntos_presentes:
-        df["lux_promedio"] = df[puntos_presentes].mean(axis=1)
-        df["lux_min"] = df[puntos_presentes].min(axis=1)
-        df["lux_max"] = df[puntos_presentes].max(axis=1)
-        df["n_puntos"] = df[puntos_presentes].notna().sum(axis=1)
-    else:
-        df["lux_promedio"] = np.nan
-        df["lux_min"] = np.nan
-        df["lux_max"] = np.nan
-        df["n_puntos"] = 0
-
-    df["uniformidad"] = np.where(df["lux_promedio"] > 0, df["lux_min"] / df["lux_promedio"], np.nan)
-
-    def check_norma(row):
-        area = str(row.get("area", "")).strip()
-        norma = NORMA_LUX.get(area, DEFAULT_NORMA)
-        minimo = norma[0]
-        prom = row.get("lux_promedio", np.nan)
-        u0 = row.get("uniformidad", np.nan)
-        cumple_lux = prom >= minimo if not np.isnan(prom) else False
-        cumple_u0 = u0 >= 0.6 if not np.isnan(u0) else True
-        return "Cumple" if (cumple_lux and cumple_u0) else "No cumple"
-
-    df["cumplimiento"] = df.apply(check_norma, axis=1)
+    for p in range(1, NUM_PUNTOS + 1):
+        col = f"Cumple_P{p}"
+        if col in df.columns:
+            def _norm_val(x):
+                if pd.isna(x):
+                    return np.nan
+                s = str(x).strip().lower()
+                s = re.sub(r"\s+", " ", s)
+                if s in cumple_true:
+                    return "Cumple"
+                if s in cumple_false:
+                    return "No cumple"
+                if s in na_vals:
+                    return np.nan
+                if "no" in s and "cumple" in s:
+                    return "No cumple"
+                if "cumple" in s:
+                    return "Cumple"
+                return np.nan
+            df[col] = df[col].apply(_norm_val)
 
     return df
 
-def get_norma(area: str):
-    return NORMA_LUX.get(area.strip(), DEFAULT_NORMA)
 
-# ─────────────────────────────────────────────────────────────
-# INTERFAZ: entrada de URL/ID y fallback por carga manual
-# ─────────────────────────────────────────────────────────────
-st.markdown('<div class="main-title">💡 Dashboard SST · Iluminación en Áreas de Trabajo</div>', unsafe_allow_html=True)
-st.markdown('<div class="subtitle">RETILAP · NTC 900 · ISO 8995-1 · Monitoreo</div>', unsafe_allow_html=True)
-st.markdown("---")
+def lux_referencia(area: str) -> int | None:
+    area_l = str(area).lower()
+    for clave, val in RETILAP.items():
+        if clave in area_l:
+            return val
+    return None
 
-with st.sidebar:
-    st.markdown("### ⚙️ Panel de Control")
-    st.markdown("---")
-    st.markdown("Introduce el ID o la URL de Google Sheets (opcional). Si la descarga falla, puedes subir el CSV manualmente.")
-    sheet_input = st.text_input("ID o URL de Google Sheets", value="1P3BmLZpGIovaAvN3wep0K-5-NKxjMCBASd03WhHpzgw")
-    # Refresh button: clear cache and rely on Streamlit's automatic rerun on button click.
-    if st.button("🔄 Intentar descargar desde Google Sheets", use_container_width=True):
-        st.cache_data.clear()
-        st.experimental_set_query_params(_refresh=datetime.now().timestamp())  # small harmless state change to force rerun in some environments
 
-    st.markdown("---")
-    st.markdown("O sube un archivo CSV exportado desde Google Sheets")
-    uploaded_file = st.file_uploader("Subir CSV (opcional)", type=["csv"], accept_multiple_files=False)
+# ───────────────────────────────────────────────────────────────
+# COLUMNAS AUXILIARES
+# ───────────────────────────────────────────────────────────────
+LUX_COLS = [f"Lux_P{p}" for p in range(1, NUM_PUNTOS + 1)]
+CUMPLE_COLS = [f"Cumple_P{p}" for p in range(1, NUM_PUNTOS + 1)]
 
-    st.markdown("---")
-    st.markdown("### 📋 Marco Normativo")
-    st.markdown("""
-    <div class="norma-box">
-        <div style="font-weight:700; color:#ffd166;">🇨🇴 RETILAP 2010</div>
-        <div style="margin-top:6px;">Tabla 440.1 — Niveles de iluminancia según tipo de tarea. Uniformidad U₀ ≥ 0.6</div>
-    </div>
-    <div class="norma-box" style="margin-top:8px;">
-        <div style="font-weight:700; color:#ffd166;">🌐 ISO 8995-1</div>
-        <div style="margin-top:6px;">Alumbrado de lugares de trabajo interiores. Criterios de cantidad y calidad.</div>
-    </div>
-    """, unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────────────────────
-# Intentar obtener CSV: prioridad
-# 1) Si usuario subió archivo -> usarlo
-# 2) Si pidió descargar -> intentar descargar con varias URLs
-# 3) Si no, intentar descargar con valor por defecto (si hay)
-# 4) Si todo falla -> pedir carga manual
-# ─────────────────────────────────────────────────────────────
-csv_text = None
-download_error = None
+# ───────────────────────────────────────────────────────────────
+# APP PRINCIPAL
+# ───────────────────────────────────────────────────────────────
+def main() -> None:
+    st.markdown(
+        """
+        <style>
+        .sec-title { font-size:1.05rem; font-weight:700; margin:12px 0; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
-# 1) archivo subido
-if uploaded_file is not None:
+    st.markdown("<div style='text-align:center;padding:8px 0'><h1>💡 Dashboard Iluminación RETILAP</h1></div>", unsafe_allow_html=True)
+
+    with st.sidebar:
+        st.markdown("## ⚙️ Panel de control")
+        if st.button("🔄  Refrescar datos", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
+        st.caption(f"Última carga: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+        st.divider()
+        st.markdown("### 📋 Normas RETILAP")
+        for area, lux in RETILAP_DISPLAY.items():
+            st.markdown(f"- **{area}:** {lux} lux")
+        st.divider()
+        st.markdown(f"🔗 [Ver Google Sheet]({SHEET_LINK})")
+
+    # Cargar datos (robusto)
+    with st.spinner("⏳ Cargando datos (intento automático y opciones manuales)…"):
+        df_raw, error = cargar_datos_interactivo()
+
+    if error:
+        st.error(f"❌ No se pudo cargar la hoja: {error}")
+        st.info("Si la hoja no es pública, exporta el CSV desde Google Sheets (Archivo → Descargar → Valores separados por comas) y súbelo aquí.")
+        return
+
+    if df_raw is None or df_raw.empty:
+        st.warning("⚠️ No hay datos en el CSV proporcionado.")
+        return
+
+    df_full = limpiar_columnas(df_raw.copy())
+
+    # Sólo columnas que existen
+    lux_cols = [c for c in LUX_COLS if c in df_full.columns]
+    cumple_cols = [c for c in CUMPLE_COLS if c in df_full.columns]
+
+    # Filtros en sidebar
+    with st.sidebar:
+        st.divider()
+        st.markdown("### 🔍 Filtros")
+        areas = sorted(df_full["Area"].dropna().unique().tolist())
+        areas_sel = st.multiselect("Área(s)", areas, default=areas)
+        fechas_validas = df_full["Fecha"].dropna() if "Fecha" in df_full.columns else pd.Series(dtype="datetime64[ns]")
+        if not fechas_validas.empty:
+            f_min, f_max = fechas_validas.min().date(), fechas_validas.max().date()
+            rango = st.date_input("Rango de fechas", value=(f_min, f_max))
+        else:
+            rango = None
+
+    # Aplicar filtros
+    df = df_full.copy()
+    if areas_sel:
+        df = df[df["Area"].isin(areas_sel)]
+    if rango and len(rango) == 2 and "Fecha" in df.columns:
+        df = df[(df["Fecha"].dt.date >= rango[0]) & (df["Fecha"].dt.date <= rango[1])]
+
+    if df.empty:
+        st.warning("No hay registros con los filtros seleccionados.")
+        return
+
+    # KPIs
+    st.markdown('<div class="sec-title">📊 Indicadores Generales</div>', unsafe_allow_html=True)
+
+    todos_lux = df[lux_cols].values.flatten() if lux_cols else np.array([])
+    todos_lux = pd.to_numeric(pd.Series(todos_lux), errors="coerce").dropna().values
+
+    todos_cumple = df[cumple_cols].values.flatten() if cumple_cols else np.array([])
+    todos_cumple = [v for v in todos_cumple if v in ("Cumple", "No cumple")]
+    pct_cumple = (sum(v == "Cumple" for v in todos_cumple) / len(todos_cumple) * 100) if len(todos_cumple) else 0
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("📅 Registros totales", len(df))
+    c2.metric("✅ Cumplimiento RETILAP", f"{pct_cumple:.1f}%")
+    c3.metric("💡 Promedio lux general", f"{np.nanmean(todos_lux):.0f}" if len(todos_lux) else "—")
     try:
-        csv_text = uploaded_file.getvalue().decode("utf-8")
+        areas_n = int(df["Area"].nunique())
     except Exception:
-        try:
-            csv_text = uploaded_file.getvalue().decode("latin-1")
-        except Exception as e:
-            st.error(f"No se pudo leer el archivo subido: {e}")
-            st.stop()
+        areas_n = 0
+    c4.metric("🏢 Áreas evaluadas", areas_n)
 
-# 2) intento de descarga si hay input en sheet_input
-if csv_text is None and sheet_input:
-    urls = build_possible_csv_urls(sheet_input)
-    if urls:
-        csv_text, download_error = try_download_csv(urls, timeout=15)
-    else:
-        download_error = "No se pudo construir una URL válida desde la entrada proporcionada."
+    # Pestañas con gráficas básicas
+    tab1, tab2 = st.tabs(["📊 Cumplimiento por Área", "💡 Valores de Lux"])
 
-# Si no se obtuvo CSV, mostrar mensaje y permitir pegar CSV manualmente
-if csv_text is None:
-    st.warning("No se pudo descargar el CSV automáticamente o no se subió archivo. Puedes pegar el contenido CSV aquí o subir un archivo.")
-    pasted = st.text_area("Pega aquí el contenido CSV (opcional)", height=200)
-    if pasted and not csv_text:
-        csv_text = pasted
+    with tab1:
+        st.markdown('<div class="sec-title">Cumplimiento RETILAP por Área</div>', unsafe_allow_html=True)
+        if not cumple_cols:
+            st.info("No hay columnas de cumplimiento detectadas.")
+        else:
+            df_melt = df.melt(id_vars=["Fecha", "Area"], value_vars=cumple_cols, var_name="Punto", value_name="Estado").dropna(subset=["Estado"])
+            df_melt = df_melt[df_melt["Estado"].isin(["Cumple", "No cumple"])]
+            if df_melt.empty:
+                st.info("Sin datos de cumplimiento para mostrar.")
+            else:
+                resumen = df_melt.groupby(["Area", "Estado"]).size().reset_index(name="Cantidad")
+                total_area = resumen.groupby("Area")["Cantidad"].sum().reset_index(name="Total")
+                resumen = resumen.merge(total_area, on="Area")
+                resumen["Porcentaje"] = resumen["Cantidad"] / resumen["Total"] * 100
 
-    if download_error:
-        st.error(f"No se pudo descargar CSV: {download_error}")
+                fig = px.bar(
+                    resumen,
+                    x="Area",
+                    y="Porcentaje",
+                    color="Estado",
+                    barmode="stack",
+                    color_discrete_map={"Cumple": "#2ecc71", "No cumple": "#e74c3c"},
+                    title="% Cumplimiento por Área (todos los puntos)",
+                    text_auto=".1f",
+                )
+                fig.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", yaxis_range=[0, 105])
+                fig.update_xaxes(tickangle=-30)
+                st.plotly_chart(fig, use_container_width=True)
 
-    if csv_text is None:
-        st.info("Sube un CSV o pega su contenido para continuar.")
-        st.stop()
+    with tab2:
+        st.markdown('<div class="sec-title">Valores de Lux vs. Norma RETILAP</div>', unsafe_allow_html=True)
+        if not lux_cols:
+            st.info("No hay columnas de lux detectadas.")
+        else:
+            df_lux = df.melt(id_vars=["Fecha", "Area"], value_vars=lux_cols, var_name="Punto", value_name="Lux").dropna(subset=["Lux"])
+            if df_lux.empty:
+                st.info("Sin valores de lux para mostrar.")
+            else:
+                fig3 = px.box(df_lux, x="Area", y="Lux", color="Area", points="all", title="Distribución de Lux por Área")
+                areas_unicas = df_lux["Area"].unique().tolist()
+                for area in areas_unicas:
+                    ref = lux_referencia(area)
+                    if ref:
+                        fig3.add_hline(y=ref, line_dash="dash", line_color="yellow", annotation_text=f"Ref {ref} lux", annotation_position="top left")
+                fig3.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+                fig3.update_xaxes(tickangle=-30)
+                st.plotly_chart(fig3, use_container_width=True)
 
-# ─────────────────────────────────────────────────────────────
-# Parsear CSV y validar columnas
-# ─────────────────────────────────────────────────────────────
-try:
-    df_raw = parse_csv_text_to_df(csv_text)
-except Exception as e:
-    st.error(f"Error al parsear CSV: {e}")
-    st.stop()
+    st.markdown("<br>", unsafe_allow_html=True)
 
-# Validaciones básicas
-if df_raw.empty:
-    st.error("El CSV fue leído pero no contiene filas.")
-    st.write("Columnas detectadas:", df_raw.columns.tolist())
-    st.stop()
 
-if "area" not in df_raw.columns:
-    st.error("No se detectó una columna que represente 'area'. Revisa los encabezados del CSV.")
-    st.write("Columnas detectadas:", df_raw.columns.tolist())
-    st.stop()
-
-# ─────────────────────────────────────────────────────────────
-# SIDEBAR: mostrar resumen y filtros (continuación)
-# ─────────────────────────────────────────────────────────────
-with st.sidebar:
-    st.markdown(f"**📊 Registros cargados:** `{len(df_raw)}`")
-    if "marca_temporal" in df_raw.columns:
-        ultima = df_raw["marca_temporal"].max()
-        st.markdown(f"**🕐 Última entrada:** `{ultima.strftime('%d/%m/%Y %H:%M') if pd.notna(ultima) else 'N/D'}`")
-
-    st.markdown("---")
-    st.markdown("### 🔍 Filtros")
-
-    areas_disp = sorted(df_raw["area"].dropna().unique().tolist()) if "area" in df_raw.columns else []
-    areas_sel = st.multiselect("Área(s)", areas_disp, default=areas_disp)
-
-    climas_disp = sorted(df_raw["clima"].dropna().unique().tolist()) if "clima" in df_raw.columns else []
-    climas_sel = st.multiselect("Condición climática", climas_disp, default=climas_disp)
-
-    if "fecha" in df_raw.columns and df_raw["fecha"].notna().any():
-        fmin = df_raw["fecha"].min().date()
-        fmax = df_raw["fecha"].max().date()
-        rango_fecha = st.date_input("Rango de fechas", value=(fmin, fmax), min_value=fmin, max_value=fmax)
-    else:
-        rango_fecha = None
-
-# ─────────────────────────────────────────────────────────────
-# FILTRAR DATOS
-# ─────────────────────────────────────────────────────────────
-df = df_raw.copy()
-if areas_sel:
-    if "area" in df.columns:
-        df = df[df["area"].isin(areas_sel)]
-if climas_sel:
-    if "clima" in df.columns:
-        df = df[df["clima"].isin(climas_sel)]
-if rango_fecha and len(rango_fecha) == 2 and "fecha" in df.columns:
-    f0, f1 = pd.Timestamp(rango_fecha[0]), pd.Timestamp(rango_fecha[1])
-    df = df[(df["fecha"] >= f0) & (df["fecha"] <= f1)]
-
-if df.empty:
-    st.warning("⚠️ No hay datos con los filtros seleccionados.")
-    st.stop()
-
-# ─────────────────────────────────────────────────────────────
-# KPI CARDS
-# ─────────────────────────────────────────────────────────────
-puntos_cols = [f"P{i}" for i in range(1, 9) if f"P{i}" in df.columns]
-
-total_mediciones  = len(df)
-areas_evaluadas   = df["area"].nunique() if "area" in df.columns else 0
-lux_global_prom   = df["lux_promedio"].mean() if "lux_promedio" in df.columns else np.nan
-cumplimiento_pct  = (df["cumplimiento"] == "Cumple").mean() * 100 if "cumplimiento" in df.columns else 0
-u0_global         = df["uniformidad"].mean() if "uniformidad" in df.columns else np.nan
-lux_global_min    = df["lux_min"].min() if "lux_min" in df.columns else np.nan
-
-kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
-
-with kpi1:
-    st.markdown(f"""
-    <div class="kpi-card">
-        <div class="kpi-value">{total_mediciones}</div>
-        <div class="kpi-label">Mediciones totales</div>
-    </div>""", unsafe_allow_html=True)
-
-with kpi2:
-    st.markdown(f"""
-    <div class="kpi-card">
-        <div class="kpi-value">{areas_evaluadas}</div>
-        <div class="kpi-label">Áreas evaluadas</div>
-    </div>""", unsafe_allow_html=True)
-
-with kpi3:
-    color_lux = "#64ffda" if (pd.notna(lux_global_prom) and lux_global_prom >= 300) else "#ff6363"
-    lux_display = f"{lux_global_prom:.0f}" if pd.notna(lux_global_prom) else "N/D"
-    st.markdown(f"""
-    <div class="kpi-card">
-        <div class="kpi-value" style="color:{color_lux}">{lux_display}</div>
-        <div class="kpi-label">Lux promedio global</div>
-    </div>""", unsafe_allow_html=True)
-
-with kpi4:
-    color_c = "#64ffda" if cumplimiento_pct >= 80 else ("#ffd166" if cumplimiento_pct >= 60 else "#ff6363")
-    st.markdown(f"""
-    <div class="kpi-card">
-        <div class="kpi-value" style="color:{color_c}">{cumplimiento_pct:.0f}%</div>
-        <div class="kpi-label">Cumplimiento normativo</div>
-    </div>""", unsafe_allow_html=True)
-
-with kpi5:
-    color_u = "#64ffda" if (pd.notna(u0_global) and u0_global >= 0.6) else "#ff6363"
-    u0_disp = f"{u0_global:.2f}" if pd.notna(u0_global) else "N/D"
-    st.markdown(f"""
-    <div class="kpi-card">
-        <div class="kpi-value" style="color:{color_u}">{u0_disp}</div>
-        <div class="kpi-label">Uniformidad (U₀) media</div>
-    </div>""", unsafe_allow_html=True)
-
-st.markdown("<br>", unsafe_allow_html=True)
-
-# ─────────────────────────────────────────────────────────────
-# GRÁFICAS - LAYOUT Y ESTILOS
-# ─────────────────────────────────────────────────────────────
-PLOT_LAYOUT = dict(
-    paper_bgcolor="rgba(0,0,0,0)",
-    plot_bgcolor="rgba(13,27,42,0.6)",
-    font=dict(family="Sora, sans-serif", color="#ccd6f6", size=11),
-    title_font=dict(family="Sora, sans-serif", size=14, color="#ccd6f6"),
-    legend=dict(bgcolor="rgba(0,0,0,0)", bordercolor="#1e3a5f"),
-    margin=dict(l=40, r=20, t=50, b=40),
-    colorway=["#64ffda","#00b4d8","#ffd166","#ff6363","#a8dadc","#e63946","#457b9d","#1d3557"],
-)
-
-st.markdown('<div class="section-header">📊 Análisis por Área</div>', unsafe_allow_html=True)
-col_g1, col_g2 = st.columns(2)
-
-# ── Gráfica 1: Lux promedio por área vs nivel normativo
-with col_g1:
-    st.markdown("**Iluminancia promedio por área vs. Mínimo RETILAP**")
-    if "area" in df.columns and "lux_promedio" in df.columns:
-        area_stats = df.groupby("area")["lux_promedio"].mean().reset_index()
-        area_stats.columns = ["area", "lux_promedio"]
-        area_stats["lux_minimo_norma"] = area_stats["area"].apply(lambda a: get_norma(a)[0])
-        area_stats["lux_recomendado"] = area_stats["area"].apply(lambda a: get_norma(a)[1])
-        area_stats = area_stats.sort_values("lux_promedio", ascending=True)
-
-        fig1 = go.Figure()
-        fig1.add_trace(go.Bar(
-            x=area_stats["lux_promedio"],
-            y=area_stats["area"],
-            orientation="h",
-            name="Lux medido",
-            marker=dict(
-                color=area_stats["lux_promedio"],
-                colorscale=[[0, "#ff6363"], [0.4, "#ffd166"], [1, "#64ffda"]],
-                showscale=False,
-            ),
-            text=[f"{v:.0f} lux" for v in area_stats["lux_promedio"]],
-            textposition="outside",
-            textfont=dict(size=10, color="#ccd6f6"),
-        ))
-        for _, row in area_stats.iterrows():
-            fig1.add_shape(
-                type="line",
-                x0=row["lux_minimo_norma"], x1=row["lux_minimo_norma"],
-                y0=row["area"], y1=row["area"],
-                xref="x", yref="y",
-                line=dict(color="#ffd166", width=2, dash="dot"),
-            )
-        fig1.update_layout(**PLOT_LAYOUT, height=380,
-                           xaxis=dict(showgrid=True, gridcolor="#1e3a5f", title="Lux"),
-                           yaxis=dict(showgrid=False))
-        st.plotly_chart(fig1, use_container_width=True)
-    else:
-        st.info("No hay datos suficientes para graficar por área (falta 'area' o 'lux_promedio').")
-
-# ── Gráfica 2: Cumplimiento por área
-with col_g2:
-    st.markdown("**Cumplimiento normativo por área (RETILAP + Uniformidad U₀)**")
-    if "area" in df.columns and "cumplimiento" in df.columns:
-        cumpl_area = df.groupby(["area", "cumplimiento"]).size().reset_index(name="n")
-        cumpl_total = df.groupby("area").size().reset_index(name="total")
-        cumpl_area = cumpl_area.merge(cumpl_total, on="area")
-        cumpl_area["pct"] = cumpl_area["n"] / cumpl_area["total"] * 100
-
-        cumpl_pivot = cumpl_area.pivot(index="area", columns="cumplimiento", values="pct").fillna(0).reset_index()
-        sort_col = "Cumple" if "Cumple" in cumpl_pivot.columns else cumpl_pivot.columns[1]
-        cumpl_pivot = cumpl_pivot.sort_values(sort_col)
-
-        fig2 = go.Figure()
-        if "Cumple" in cumpl_pivot.columns:
-            fig2.add_trace(go.Bar(
-                y=cumpl_pivot["area"], x=cumpl_pivot["Cumple"],
-                orientation="h", name="✅ Cumple",
-                marker_color="#64ffda", opacity=0.85,
-            ))
-        if "No cumple" in cumpl_pivot.columns:
-            fig2.add_trace(go.Bar(
-                y=cumpl_pivot["area"], x=cumpl_pivot["No cumple"],
-                orientation="h", name="❌ No cumple",
-                marker_color="#ff6363", opacity=0.85,
-            ))
-        fig2.update_layout(
-            **PLOT_LAYOUT, height=380, barmode="stack",
-            xaxis=dict(range=[0, 100], title="%", showgrid=True, gridcolor="#1e3a5f"),
-            yaxis=dict(showgrid=False),
-        )
-        fig2.add_vline(x=80, line_dash="dot", line_color="#ffd166",
-                       annotation_text="Meta 80%", annotation_font_color="#ffd166")
-        st.plotly_chart(fig2, use_container_width=True)
-    else:
-        st.info("No hay datos suficientes para graficar cumplimiento por área (falta 'area' o 'cumplimiento').")
-
-# ─────────────────────────────────────────────────────────────
-# GRÁFICAS - FILA 2
-# ─────────────────────────────────────────────────────────────
-col_g3, col_g4 = st.columns(2)
-
-with col_g3:
-    st.markdown("**Distribución de luxes por área** *(variabilidad de mediciones)*")
-    if puntos_cols and "area" in df.columns:
-        df_melt = df.melt(id_vars=["area"], value_vars=puntos_cols, var_name="Punto", value_name="Lux").dropna()
-        fig3 = go.Figure()
-        for area in sorted(df_melt["area"].unique()):
-            sub = df_melt[df_melt["area"] == area]
-            fig3.add_trace(go.Box(
-                y=sub["Lux"], name=area, boxpoints="all",
-                jitter=0.4, pointpos=0,
-                marker=dict(size=4, opacity=0.6),
-                line=dict(width=1.5),
-            ))
-        fig3.update_layout(
-            **PLOT_LAYOUT, height=380,
-            yaxis=dict(title="Lux", showgrid=True, gridcolor="#1e3a5f"),
-            xaxis=dict(showgrid=False, tickangle=-30),
-            showlegend=False,
-        )
-        fig3.add_hline(y=300, line_dash="dash", line_color="#ffd166", line_width=1.5,
-                       annotation_text="Mín. general 300 lux", annotation_font_color="#ffd166")
-        st.plotly_chart(fig3, use_container_width=True)
-    else:
-        st.info("No hay puntos P1..P8 o columna 'area' para mostrar la distribución.")
-
-with col_g4:
-    st.markdown("**Relación entre condición climática e iluminancia**")
-    if "clima" in df.columns and "lux_promedio" in df.columns:
-        clima_stats = df.groupby("clima")["lux_promedio"].agg(["mean", "std", "count"]).reset_index()
-        clima_stats.columns = ["clima", "lux_mean", "lux_std", "n"]
-
-        fig4 = go.Figure()
-        for _, row in clima_stats.iterrows():
-            color = CLIMA_COLORES.get(row["clima"], "#ccd6f6")
-            err_color = "rgba(255,255,255,0.27)"
-            err_array = [row["lux_std"] if pd.notna(row["lux_std"]) else 0]
-            fig4.add_trace(go.Bar(
-                x=[row["clima"]],
-                y=[row["lux_mean"]],
-                name=row["clima"],
-                marker_color=color,
-                error_y=dict(type="data", array=err_array, color=err_color, thickness=1.5),
-                text=[f"μ={row['lux_mean']:.0f}<br>n={int(row['n'])}"],
-                textposition="outside",
-                textfont=dict(size=10, color="#ccd6f6"),
-            ))
-        fig4.add_hline(y=300, line_dash="dot", line_color="rgba(255,209,102,0.35)",
-                       annotation_text="300 lux (mín. general)", annotation_font_color="#ffd166")
-        fig4.update_layout(
-            **PLOT_LAYOUT, height=380, showlegend=False,
-            yaxis=dict(title="Lux promedio", showgrid=True, gridcolor="#1e3a5f"),
-            xaxis=dict(showgrid=False),
-        )
-        st.plotly_chart(fig4, use_container_width=True)
-    else:
-        st.info("No hay datos de 'clima' o 'lux_promedio' para analizar la relación climática.")
-
-# ─────────────────────────────────────────────────────────────
-# GRÁFICAS - FILA 3: Series de tiempo y pie clima
-# ─────────────────────────────────────────────────────────────
-st.markdown('<div class="section-header">📈 Series de Tiempo y Distribución de Puntos</div>', unsafe_allow_html=True)
-col_g5, col_g6 = st.columns([2, 1])
-
-with col_g5:
-    st.markdown("**Evolución temporal de la iluminancia por área**")
-    if "marca_temporal" in df.columns and "lux_promedio" in df.columns and "area" in df.columns:
-        df_sorted = df.sort_values("marca_temporal").copy()
-        fig5 = px.line(
-            df_sorted, x="marca_temporal", y="lux_promedio",
-            color="area", markers=True,
-            labels={"marca_temporal": "Fecha/Hora", "lux_promedio": "Lux promedio", "area": "Área"},
-            color_discrete_sequence=PLOT_LAYOUT["colorway"],
-        )
-        fig5.add_hline(y=300, line_dash="dash", line_color="#ffd166", line_width=1,
-                       annotation_text="Mín. 300 lux", annotation_font_color="#ffd166")
-        fig5.update_layout(**PLOT_LAYOUT, height=360,
-                           xaxis=dict(showgrid=True, gridcolor="#1e3a5f"),
-                           yaxis=dict(showgrid=True, gridcolor="#1e3a5f"))
-        st.plotly_chart(fig5, use_container_width=True)
-    else:
-        st.info("No hay datos de marca temporal, lux promedio o área para la serie temporal.")
-
-with col_g6:
-    st.markdown("**Distribución de condiciones climáticas**")
-    if "clima" in df.columns:
-        clima_count = df["clima"].value_counts().reset_index()
-        clima_count.columns = ["clima", "count"]
-        fig6 = go.Figure(go.Pie(
-            labels=clima_count["clima"],
-            values=clima_count["count"],
-            hole=0.55,
-            marker=dict(colors=[CLIMA_COLORES.get(c, "#8892b0") for c in clima_count["clima"]],
-                        line=dict(color="#0a0f1e", width=2)),
-            textinfo="label+percent",
-        ))
-        fig6.update_layout(**PLOT_LAYOUT, height=360, showlegend=False)
-        st.plotly_chart(fig6, use_container_width=True)
-    else:
-        st.info("No hay columna 'clima' para mostrar la distribución.")
-
-# ─────────────────────────────────────────────────────────────
-# TABLA DE DATOS Y RESUMEN
-# ─────────────────────────────────────────────────────────────
-st.markdown('<div class="section-header">📋 Datos y Resumen</div>', unsafe_allow_html=True)
-
-st.markdown("**Vista previa de los datos filtrados**")
-st.dataframe(df.head(200), use_container_width=True)
-
-resumen_area = None
-if "area" in df.columns and "lux_promedio" in df.columns:
-    resumen_area = df.groupby("area").agg(
-        n_mediciones=("lux_promedio", "count"),
-        lux_promedio_area=("lux_promedio", "mean"),
-        lux_min_area=("lux_min", "min"),
-        lux_max_area=("lux_max", "max"),
-        uniformidad_media=("uniformidad", "mean"),
-        pct_cumplen=("cumplimiento", lambda s: (s == "Cumple").mean() * 100)
-    ).reset_index().sort_values("lux_promedio_area", ascending=False)
-    st.markdown("**Resumen por área**")
-    st.dataframe(resumen_area, use_container_width=True)
-else:
-    st.info("No hay suficientes columnas para generar el resumen por área.")
-
-st.markdown("---")
-
-# ─────────────────────────────────────────────────────────────
-# EXPORTAR A EXCEL: botón para descargar datos filtrados y resumen
-# ─────────────────────────────────────────────────────────────
-def to_excel_bytes(df_main, df_summary=None):
-    """
-    Crea un archivo Excel en memoria con:
-      - Hoja 'Datos' -> df_main (datos filtrados)
-      - Hoja 'Resumen por area' -> df_summary (si existe)
-      - Hoja 'Meta' -> metadatos básicos
-    Devuelve bytes listos para descarga.
-    """
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df_main.to_excel(writer, sheet_name="Datos", index=False)
-        if df_summary is not None:
-            df_summary.to_excel(writer, sheet_name="Resumen por area", index=False)
-        meta = pd.DataFrame({
-            "Generado el": [datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
-            "Registros exportados": [len(df_main)],
-            "Áreas incluidas": [df_main["area"].nunique() if "area" in df_main.columns else 0]
-        })
-        meta.to_excel(writer, sheet_name="Meta", index=False)
-        # El context manager guarda automáticamente; no llamar writer.save()
-    return output.getvalue()
-
-st.markdown("### 📥 Exportar resultados")
-col_e1, col_e2 = st.columns([3, 1])
-with col_e1:
-    st.markdown("Descarga los datos filtrados y el resumen por área en un archivo Excel.")
-with col_e2:
-    if st.button("Generar archivo Excel"):
-        try:
-            excel_bytes = to_excel_bytes(df, resumen_area)
-            filename = f"iluminacion_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-            st.success("Archivo generado. Haz clic en descargar.")
-            st.download_button(
-                label="📥 Descargar .xlsx",
-                data=excel_bytes,
-                file_name=filename,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
-        except Exception as e:
-            st.error(f"No se pudo generar el archivo Excel: {e}")
-
-st.markdown("### ✅ Listo")
-st.markdown("Dashboard listo. Si quieres que el Excel incluya hojas adicionales (por ejemplo: estadísticas por clima, gráficos embebidos, o formato condicional), dime qué hojas necesitas y lo adapto.")
+if __name__ == "__main__":
+    main()
