@@ -1,7 +1,6 @@
 import re
 from datetime import datetime
 from io import StringIO
-from typing import Tuple
 
 import numpy as np
 import pandas as pd
@@ -20,12 +19,8 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Reemplaza por tu ID de Google Sheet
 SHEET_ID = "1Rh7MbE07hMgeyFH4vvuNNpDzRVAXU0LateoBPbwg_78"
-CSV_URLS = [
-    f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=0",
-    f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&gid=0",
-]
+CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=0"
 SHEET_LINK = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit"
 
 NUM_PUNTOS = 8
@@ -51,77 +46,26 @@ RETILAP_DISPLAY = {
 }
 
 # ───────────────────────────────────────────────────────────────
-# UTILIDADES DE CARGA
+# CARGA Y LIMPIEZA DE DATOS
 # ───────────────────────────────────────────────────────────────
 @st.cache_data(ttl=0, show_spinner=False)
-def descargar_csv_desde_urls(urls: list[str], timeout: int = 20) -> Tuple[pd.DataFrame | None, str | None]:
-    """
-    Intenta descargar CSV desde una lista de URLs (ordenadas por preferencia).
-    Retorna (df, error_message). No lanza excepción al llamador.
-    """
-    last_err = None
-    headers = {"User-Agent": "Mozilla/5.0 (compatible)"}
-    for url in urls:
-        try:
-            resp = requests.get(url, timeout=timeout, headers=headers)
-            resp.raise_for_status()
-            # Intentar leer como CSV
-            df = pd.read_csv(StringIO(resp.text))
-            return df, None
-        except Exception as exc:
-            last_err = f"{type(exc).__name__}: {exc}"
-            continue
-    return None, last_err or "No se pudo descargar desde las URLs provistas."
-
-
-def cargar_datos_interactivo() -> Tuple[pd.DataFrame | None, str | None]:
-    """
-    Flujo de carga robusto:
-      1) Intenta descargar desde Google Sheets (dos endpoints).
-      2) Si falla, permite al usuario subir un archivo CSV o pegar el CSV.
-    """
-    df, err = descargar_csv_desde_urls(CSV_URLS)
-    if df is not None:
+def cargar_datos() -> tuple[pd.DataFrame | None, str | None]:
+    """Descarga el Google Sheet como CSV y retorna (df, error)."""
+    try:
+        resp = requests.get(CSV_URL, timeout=20)
+        resp.raise_for_status()
+        df = pd.read_csv(StringIO(resp.text))
         return df, None
-
-    # Si llegamos aquí, la descarga falló: ofrecer uploader/paste
-    st.warning(
-        "No se pudo descargar el CSV desde Google Sheets automáticamente.\n"
-        "Esto puede deberse a que la hoja no es pública o a restricciones del enlace."
-    )
-    st.info("Opciones: 1) Subir un archivo CSV exportado del Google Sheet. 2) Pegar el contenido CSV en el cuadro de texto.")
-
-    uploaded = st.file_uploader("Sube el CSV exportado (opción recomendada)", type=["csv"])
-    if uploaded is not None:
-        try:
-            df = pd.read_csv(uploaded)
-            return df, None
-        except Exception as exc:
-            return None, f"Error leyendo el CSV subido: {exc}"
-
-    pasted = st.text_area("O pega aquí el contenido CSV (si no subiste archivo)", height=200)
-    if pasted and pasted.strip():
-        try:
-            df = pd.read_csv(StringIO(pasted))
-            return df, None
-        except Exception as exc:
-            return None, f"Error leyendo el CSV pegado: {exc}"
-
-    # Si no se subió ni pegó nada, devolver el error original de descarga
-    return None, err or "No se proporcionó CSV manualmente."
+    except Exception as exc:
+        return None, str(exc)
 
 
-# ───────────────────────────────────────────────────────────────
-# NORMALIZACIÓN DE ENCABEZADOS Y DATOS
-# ───────────────────────────────────────────────────────────────
 def _buscar_col_por_patron(cols, patrones):
+    """Devuelve la primera columna que coincida con alguno de los patrones (lista de regex)."""
     for pat in patrones:
         for c in cols:
-            try:
-                if re.search(pat, str(c), flags=re.IGNORECASE):
-                    return c
-            except re.error:
-                continue
+            if re.search(pat, str(c), flags=re.IGNORECASE):
+                return c
     return None
 
 
@@ -134,14 +78,14 @@ def limpiar_columnas(df: pd.DataFrame) -> pd.DataFrame:
     mapping: dict[str, str] = {}
 
     # Detectar Fecha
-    col_fecha = _buscar_col_por_patron(original_cols, [r"\bfecha\b", r"\bdate\b"])
+    col_fecha = _buscar_col_por_patron(original_cols, [r"\bfecha\b", r"date"])
     if col_fecha:
         mapping[col_fecha] = "Fecha"
 
-    # Detectar Area
+    # Detectar Area (varias formas)
     col_area = _buscar_col_por_patron(
         original_cols,
-        [r"seleccione.*area", r"\barea\b", r"\bárea\b", r"ubicaci", r"depart"]
+        [r"seleccione.*area", r"\barea\b", r"\bárea\b", r"select.*area", r"area\s*:\s*"]
     )
     if col_area:
         mapping[col_area] = "Area"
@@ -150,13 +94,16 @@ def limpiar_columnas(df: pd.DataFrame) -> pd.DataFrame:
     for col in original_cols:
         col_l = str(col).lower()
 
-        # Cumple: contiene "cumple" o "indique si"
-        if ("cumple" in col_l or "indique si" in col_l) and "lux" not in col_l and "valor" not in col_l:
+        # Cumple: suele contener la palabra "cumple"
+        if "cumple" in col_l and "lux" not in col_l and "valor" not in col_l:
+            # intentar extraer número de punto
             m = re.search(r"punto\s*(\d+)", col_l) or re.search(r"\(p(\d+)\)", col_l) or re.search(r"p(\d+)", col_l)
             p = m.group(1) if m else None
             if p:
                 mapping[col] = f"Cumple_P{p}"
             else:
+                # si no hay número, asignar secuencial provisional
+                # buscar primer índice libre
                 for i in range(1, NUM_PUNTOS + 1):
                     key = f"Cumple_P{i}"
                     if key not in mapping.values():
@@ -180,11 +127,11 @@ def limpiar_columnas(df: pd.DataFrame) -> pd.DataFrame:
     if mapping:
         df = df.rename(columns=mapping)
 
-    # Fecha
+    # Asegurar columnas mínimas
     if "Fecha" in df.columns:
         df["Fecha"] = pd.to_datetime(df["Fecha"], dayfirst=True, errors="coerce")
 
-    # Si no existe 'Area', intentar inferir o crear con 'Desconocida'
+    # Si no existe 'Area', intentar inferir de cualquier columna que parezca área; si no, crear con valor 'Desconocida'
     if "Area" not in df.columns:
         inferred = _buscar_col_por_patron(original_cols, [r"\bubicaci", r"\bdepart", r"\barea\b", r"\bárea\b"])
         if inferred:
@@ -192,6 +139,7 @@ def limpiar_columnas(df: pd.DataFrame) -> pd.DataFrame:
         else:
             df["Area"] = "Desconocida"
 
+    # Normalizar Area a string
     df["Area"] = df["Area"].astype(str).str.strip()
 
     # Lux → numérico
@@ -219,6 +167,7 @@ def limpiar_columnas(df: pd.DataFrame) -> pd.DataFrame:
                     return "No cumple"
                 if s in na_vals:
                     return np.nan
+                # heurística: si contiene 'no' -> No cumple; si contiene 'cumple' -> Cumple
                 if "no" in s and "cumple" in s:
                     return "No cumple"
                 if "cumple" in s:
@@ -230,6 +179,7 @@ def limpiar_columnas(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def lux_referencia(area: str) -> int | None:
+    """Retorna el mínimo de lux RETILAP para el área indicada."""
     area_l = str(area).lower()
     for clave, val in RETILAP.items():
         if clave in area_l:
@@ -251,7 +201,7 @@ def main() -> None:
     st.markdown(
         """
         <style>
-        .sec-title { font-size:1.05rem; font-weight:700; margin:12px 0; }
+        .sec-title { font-size:1.1rem; font-weight:700; margin:12px 0; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -272,17 +222,17 @@ def main() -> None:
         st.divider()
         st.markdown(f"🔗 [Ver Google Sheet]({SHEET_LINK})")
 
-    # Cargar datos (robusto)
-    with st.spinner("⏳ Cargando datos (intento automático y opciones manuales)…"):
-        df_raw, error = cargar_datos_interactivo()
+    # Cargar datos
+    with st.spinner("⏳ Conectando con Google Sheets…"):
+        df_raw, error = cargar_datos()
 
     if error:
         st.error(f"❌ No se pudo cargar la hoja: {error}")
-        st.info("Si la hoja no es pública, exporta el CSV desde Google Sheets (Archivo → Descargar → Valores separados por comas) y súbelo aquí.")
+        st.info("Asegúrate de que el Google Sheet sea público (Compartir → Cualquier persona con el enlace puede ver).")
         return
 
     if df_raw is None or df_raw.empty:
-        st.warning("⚠️ No hay datos en el CSV proporcionado.")
+        st.warning("⚠️ El Google Sheet está vacío o no tiene datos.")
         return
 
     df_full = limpiar_columnas(df_raw.copy())
@@ -329,13 +279,14 @@ def main() -> None:
     c1.metric("📅 Registros totales", len(df))
     c2.metric("✅ Cumplimiento RETILAP", f"{pct_cumple:.1f}%")
     c3.metric("💡 Promedio lux general", f"{np.nanmean(todos_lux):.0f}" if len(todos_lux) else "—")
+    # Evitar KeyError: si por alguna razón no existe 'Area', mostrar 0
     try:
         areas_n = int(df["Area"].nunique())
     except Exception:
         areas_n = 0
     c4.metric("🏢 Áreas evaluadas", areas_n)
 
-    # Pestañas con gráficas básicas
+    # Tabs básicos (puedes extender con las gráficas que ya tenías)
     tab1, tab2 = st.tabs(["📊 Cumplimiento por Área", "💡 Valores de Lux"])
 
     with tab1:
@@ -377,6 +328,7 @@ def main() -> None:
                 st.info("Sin valores de lux para mostrar.")
             else:
                 fig3 = px.box(df_lux, x="Area", y="Lux", color="Area", points="all", title="Distribución de Lux por Área")
+                # Añadir líneas de referencia por área
                 areas_unicas = df_lux["Area"].unique().tolist()
                 for area in areas_unicas:
                     ref = lux_referencia(area)
