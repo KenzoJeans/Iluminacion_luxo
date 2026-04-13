@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║     DASHBOARD SST - MONITOREO DE ILUMINACIÓN EN ÁREAS       ║
+║     DASHBOARD - MONITOREO DE ILUMINACIÓN EN ÁREAS            ║
 ║     Basado en RETILAP y NTC 900 / ISO 8995-1                 ║
 ╚══════════════════════════════════════════════════════════════╝
 Requisitos:
@@ -263,7 +263,7 @@ CLIMA_COLORES = {
 # ─────────────────────────────────────────────────────────────
 # FUNCIONES DE CARGA Y PROCESAMIENTO
 # ─────────────────────────────────────────────────────────────
-SHEET_ID = "1P3BmLZpGIovaAvN3wep0K-5-NKxjMCBASd03WhHpzgw"
+SHEET_ID = "1P3BmLZpGIovaAvN3wep0K-5-NKxjMCBASd03WhHpzgw/edit?usp=sharing"
 CSV_URL   = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=0"
 
 @st.cache_data(ttl=0)   # ttl=0 → sólo refresca cuando el usuario lo solicita
