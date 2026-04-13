@@ -19,9 +19,9 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-SHEET_ID = "1Rh7MbE07hMgeyFH4vvuNNpDzRVAXU0LateoBPbwg_78"
+SHEET_ID = "1P3BmLZpGIovaAvN3wep0K-5-NKxjMCBASd03WhHpzgw/edit?usp=sharing"
 CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=0"
-SHEET_LINK = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit"
+SHEET_LINK = f"https://docs.google.com/spreadsheets/d/"
 
 NUM_PUNTOS = 8
 
