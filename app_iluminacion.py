@@ -6,7 +6,7 @@ Requisitos:
     pip install streamlit pandas plotly requests openpyxl
 
 Ejecución:
-    streamlit run app_iluminacion_sst.py
+    streamlit run app_iluminacion.py
 """
 
 import streamlit as st
@@ -218,8 +218,8 @@ def get_norma(area: str):
 # ─────────────────────────────────────────────────────────────
 # INTERFAZ: entrada de URL/ID y fallback por carga manual
 # ─────────────────────────────────────────────────────────────
-st.markdown('<div class="main-title">💡 Dashboard SST · Iluminación en Áreas de Trabajo</div>', unsafe_allow_html=True)
-st.markdown('<div class="subtitle">RETILAP · NTC 900 · ISO 8995-1 · Monitoreo</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-title">💡 Dashboard · Iluminación en Áreas de Trabajo</div>', unsafe_allow_html=True)
+st.markdown('<div class="subtitle">RETILAP · Monitoreo</div>', unsafe_allow_html=True)
 st.markdown("---")
 
 with st.sidebar:
@@ -241,10 +241,10 @@ with st.sidebar:
     st.markdown("""
     <div class="norma-box">
         <div style="font-weight:700; color:#ffd166;">🇨🇴 RETILAP 2010</div>
-        <div style="margin-top:6px;">Tabla 440.1 — Niveles de iluminancia según tipo de tarea. Uniformidad U₀ ≥ 0.6</div>
+        <div style="margin-top:6px;">Tabla 440.1 — Niveles de iluminancia según tipo de tarea.≥ 0.6</div>
     </div>
     <div class="norma-box" style="margin-top:8px;">
-        <div style="font-weight:700; color:#ffd166;">🌐 ISO 8995-1</div>
+        <div style="font-weight:700; color:#ffd166;"</div>
         <div style="margin-top:6px;">Alumbrado de lugares de trabajo interiores. Criterios de cantidad y calidad.</div>
     </div>
     """, unsafe_allow_html=True)
@@ -469,7 +469,7 @@ with col_g1:
 
 # ── Gráfica 2: Cumplimiento por área
 with col_g2:
-    st.markdown("**Cumplimiento normativo por área (RETILAP + Uniformidad U₀)**")
+    st.markdown("**Cumplimiento normativo por área**")
     if "area" in df.columns and "cumplimiento" in df.columns:
         cumpl_area = df.groupby(["area", "cumplimiento"]).size().reset_index(name="n")
         cumpl_total = df.groupby("area").size().reset_index(name="total")
