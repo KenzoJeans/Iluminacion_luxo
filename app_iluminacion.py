@@ -1,4 +1,3 @@
-```python
 """
 app_iluminacion_sst.py
 Dashboard SST · Iluminación (corregido y robusto)
@@ -799,4 +798,3 @@ else:
 
 st.markdown("---")
 st.markdown("Dashboard listo. Si necesitas que detecte automáticamente columnas con otros nombres, o que adapte el mapeo a tu Google Sheet, pega aquí los encabezados de la hoja y lo ajusto.")
-```
