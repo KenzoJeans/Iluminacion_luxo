@@ -1,6 +1,6 @@
 """
 app_iluminacion_sst.py
-Dashboard SST · Iluminación (versión completa y corregida)
+Dashboard SST · Iluminación (versión completa, corregida y con exportación a Excel)
 
 Requisitos:
     pip install streamlit pandas plotly requests openpyxl
@@ -14,7 +14,7 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-from io import StringIO
+from io import StringIO, BytesIO
 import requests
 import warnings
 import difflib
@@ -82,19 +82,12 @@ CLIMA_COLORES = {
 # UTILIDADES PARA DETECCIÓN ROBUSTA DE COLUMNAS
 # ─────────────────────────────────────────────────────────────
 def find_best_column(columns, candidates):
-    """
-    Busca la mejor columna en 'columns' que coincida con cualquiera de las palabras en 'candidates'.
-    Usa coincidencia por substring y, si no hay, usa difflib para coincidencia aproximada.
-    Devuelve None si no encuentra nada.
-    """
     cols_lower = {c: c.lower() for c in columns}
-    # 1) Substring match
     for cand in candidates:
         cand_l = cand.lower()
         for c, cl in cols_lower.items():
             if cand_l in cl:
                 return c
-    # 2) Fuzzy match con difflib
     names = list(columns)
     for cand in candidates:
         matches = difflib.get_close_matches(cand, names, n=1, cutoff=0.6)
@@ -103,12 +96,6 @@ def find_best_column(columns, candidates):
     return None
 
 def build_possible_csv_urls(sheet_input: str):
-    """
-    Acepta:
-      - ID de hoja (solo el id)
-      - URL completa de Google Sheets
-    Devuelve una lista de URLs de export CSV a intentar.
-    """
     s = sheet_input.strip()
     urls = []
     sheet_id = None
@@ -134,7 +121,6 @@ def try_download_csv(urls, timeout=15):
             resp = requests.get(u, timeout=timeout)
             resp.raise_for_status()
             text = resp.text
-            # detectar si la respuesta es HTML de error
             if text.strip().lower().startswith("<!doctype html") or ("error" in text.lower() and "google" in text.lower()):
                 last_err = f"Respuesta no es CSV válida desde {u}"
                 continue
@@ -556,7 +542,6 @@ with col_g4:
         fig4 = go.Figure()
         for _, row in clima_stats.iterrows():
             color = CLIMA_COLORES.get(row["clima"], "#ccd6f6")
-            # error_y color must be a valid CSS color; use rgba for transparency
             err_color = "rgba(255,255,255,0.27)"
             err_array = [row["lux_std"] if pd.notna(row["lux_std"]) else 0]
             fig4.add_trace(go.Bar(
@@ -631,6 +616,7 @@ st.markdown('<div class="section-header">📋 Datos y Resumen</div>', unsafe_all
 st.markdown("**Vista previa de los datos filtrados**")
 st.dataframe(df.head(200), use_container_width=True)
 
+resumen_area = None
 if "area" in df.columns and "lux_promedio" in df.columns:
     resumen_area = df.groupby("area").agg(
         n_mediciones=("lux_promedio", "count"),
@@ -646,4 +632,72 @@ else:
     st.info("No hay suficientes columnas para generar el resumen por área.")
 
 st.markdown("---")
-st.markdown("Dashboard listo. Si necesitas adaptar el mapeo de columnas a tu Google Sheet, pega aquí los encabezados y lo ajusto.")
+
+# ─────────────────────────────────────────────────────────────
+# EXPORTAR A EXCEL: botón para descargar datos filtrados y resumen
+# ─────────────────────────────────────────────────────────────
+def to_excel_bytes(df_main: pd.DataFrame, df_summary: pd.DataFrame | None = None) -> bytes:
+    """
+    Crea un archivo Excel en memoria con:
+      - Hoja 'Datos' -> df_main (datos filtrados)
+      - Hoja 'Resumen por área' -> df_summary (si existe)
+    Devuelve bytes listos para descarga.
+    """
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        # Escribir datos filtrados
+        df_main.to_excel(writer, sheet_name="Datos", index=False)
+        # Escribir resumen si existe
+        if df_summary is not None:
+            df_summary.to_excel(writer, sheet_name="Resumen por area", index=False)
+        # Hoja con metadatos básicos
+        meta = pd.DataFrame({
+            "Generado el": [datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
+            "Registros exportados": [len(df_main)],
+            "Áreas incluidas": [df_main["area"].nunique() if "area" in df_main.columns else 0]
+        })
+        meta.to_excel(writer, sheet_name="Meta", index=False)
+        writer.save()
+    return output.getvalue()
+
+st.markdown("### 📥 Exportar resultados")
+col_e1, col_e2 = st.columns([3, 1])
+with col_e1:
+    st.markdown("Descarga los datos filtrados y el resumen por área en un archivo Excel.")
+with col_e2:
+    # Preparar bytes para descarga (solo cuando se presione el botón)
+    if st.button("Exportar a Excel"):
+        try:
+            excel_bytes = to_excel_bytes(df, resumen_area)
+            filename = f"iluminacion_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            st.download_button(
+                label="Descargar archivo .xlsx",
+                data=excel_bytes,
+                file_name=filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+        except Exception as e:
+            st.error(f"No se pudo generar el archivo Excel: {e}")
+
+# Alternativa: mostrar siempre el botón de descarga (pre-generado) — opcional
+# Si prefieres que el botón de descarga esté siempre visible sin paso intermedio,
+# descomenta el bloque siguiente y comenta el bloque anterior.
+#
+# try:
+#     excel_bytes_always = to_excel_bytes(df, resumen_area)
+#     filename = f"iluminacion_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+#     st.download_button(
+#         label="📥 Descargar Excel con datos y resumen",
+#         data=excel_bytes_always,
+#         file_name=filename,
+#         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+#         use_container_width=True
+#     )
+# except Exception as e:
+#     st.error(f"No se pudo preparar la descarga: {e}")
+
+st.markdown("### ✅ Listo")
+st.markdown("Dashboard listo. Si quieres que el Excel incluya hojas adicionales (por ejemplo: estadísticas por clima, gráficos embebidos, o formato condicional), dime qué hojas necesitas y lo adapto.")
+
+
