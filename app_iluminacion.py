@@ -1,6 +1,6 @@
 """
 app_iluminacion_sst.py
-Dashboard SST · Iluminación (versión completa y robusta)
+Dashboard SST · Iluminación (versión completa y corregida)
 
 Requisitos:
     pip install streamlit pandas plotly requests openpyxl
@@ -542,8 +542,7 @@ with col_g3:
             showlegend=False,
         )
         fig3.add_hline(y=300, line_dash="dash", line_color="#ffd166", line_width=1.5,
-                       annotation_text="Mín. general 300 lux", annotation_font_color="#ffd166",
-                       annotation_position="top right")
+                       annotation_text="Mín. general 300 lux", annotation_font_color="#ffd166")
         st.plotly_chart(fig3, use_container_width=True)
     else:
         st.info("No hay puntos P1..P8 o columna 'area' para mostrar la distribución.")
@@ -557,20 +556,21 @@ with col_g4:
         fig4 = go.Figure()
         for _, row in clima_stats.iterrows():
             color = CLIMA_COLORES.get(row["clima"], "#ccd6f6")
+            # error_y color must be a valid CSS color; use rgba for transparency
+            err_color = "rgba(255,255,255,0.27)"
+            err_array = [row["lux_std"] if pd.notna(row["lux_std"]) else 0]
             fig4.add_trace(go.Bar(
                 x=[row["clima"]],
                 y=[row["lux_mean"]],
                 name=row["clima"],
                 marker_color=color,
-                error_y=dict(type="data", array=[row["lux_std"] if pd.notna(row["lux_std"]) else 0],
-                             color="#ffffff44", thickness=1.5),
+                error_y=dict(type="data", array=err_array, color=err_color, thickness=1.5),
                 text=[f"μ={row['lux_mean']:.0f}<br>n={int(row['n'])}"],
                 textposition="outside",
                 textfont=dict(size=10, color="#ccd6f6"),
             ))
-        fig4.add_hline(y=300, line_dash="dot", line_color="#ffd16688",
-                       annotation_text="300 lux (mín. general)", annotation_font_color="#ffd166",
-                       annotation_position="top right")
+        fig4.add_hline(y=300, line_dash="dot", line_color="rgba(255,209,102,0.35)",
+                       annotation_text="300 lux (mín. general)", annotation_font_color="#ffd166")
         fig4.update_layout(
             **PLOT_LAYOUT, height=380, showlegend=False,
             yaxis=dict(title="Lux promedio", showgrid=True, gridcolor="#1e3a5f"),
