@@ -26,7 +26,7 @@ warnings.filterwarnings("ignore")
 # CONFIGURACIÓN DE PÁGINA
 # ─────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Dashboard SST · Iluminación",
+    page_title="Dashboard · Iluminación",
     page_icon="💡",
     layout="wide",
     initial_sidebar_state="expanded",
