@@ -636,28 +636,26 @@ st.markdown("---")
 # ─────────────────────────────────────────────────────────────
 # EXPORTAR A EXCEL: botón para descargar datos filtrados y resumen
 # ─────────────────────────────────────────────────────────────
-def to_excel_bytes(df_main: pd.DataFrame, df_summary: pd.DataFrame | None = None) -> bytes:
+def to_excel_bytes(df_main, df_summary=None):
     """
     Crea un archivo Excel en memoria con:
       - Hoja 'Datos' -> df_main (datos filtrados)
-      - Hoja 'Resumen por área' -> df_summary (si existe)
+      - Hoja 'Resumen por area' -> df_summary (si existe)
+      - Hoja 'Meta' -> metadatos básicos
     Devuelve bytes listos para descarga.
     """
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        # Escribir datos filtrados
         df_main.to_excel(writer, sheet_name="Datos", index=False)
-        # Escribir resumen si existe
         if df_summary is not None:
             df_summary.to_excel(writer, sheet_name="Resumen por area", index=False)
-        # Hoja con metadatos básicos
         meta = pd.DataFrame({
             "Generado el": [datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
             "Registros exportados": [len(df_main)],
             "Áreas incluidas": [df_main["area"].nunique() if "area" in df_main.columns else 0]
         })
         meta.to_excel(writer, sheet_name="Meta", index=False)
-        writer.save()
+        # NO llamar writer.save() ni writer.close(); el context manager se encarga de guardar
     return output.getvalue()
 
 st.markdown("### 📥 Exportar resultados")
@@ -665,13 +663,13 @@ col_e1, col_e2 = st.columns([3, 1])
 with col_e1:
     st.markdown("Descarga los datos filtrados y el resumen por área en un archivo Excel.")
 with col_e2:
-    # Preparar bytes para descarga (solo cuando se presione el botón)
-    if st.button("Exportar a Excel"):
+    if st.button("Generar archivo Excel"):
         try:
             excel_bytes = to_excel_bytes(df, resumen_area)
             filename = f"iluminacion_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            st.success("Archivo generado. Haz clic en descargar.")
             st.download_button(
-                label="Descargar archivo .xlsx",
+                label="📥 Descargar .xlsx",
                 data=excel_bytes,
                 file_name=filename,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -680,24 +678,5 @@ with col_e2:
         except Exception as e:
             st.error(f"No se pudo generar el archivo Excel: {e}")
 
-# Alternativa: mostrar siempre el botón de descarga (pre-generado) — opcional
-# Si prefieres que el botón de descarga esté siempre visible sin paso intermedio,
-# descomenta el bloque siguiente y comenta el bloque anterior.
-#
-# try:
-#     excel_bytes_always = to_excel_bytes(df, resumen_area)
-#     filename = f"iluminacion_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-#     st.download_button(
-#         label="📥 Descargar Excel con datos y resumen",
-#         data=excel_bytes_always,
-#         file_name=filename,
-#         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-#         use_container_width=True
-#     )
-# except Exception as e:
-#     st.error(f"No se pudo preparar la descarga: {e}")
-
 st.markdown("### ✅ Listo")
 st.markdown("Dashboard listo. Si quieres que el Excel incluya hojas adicionales (por ejemplo: estadísticas por clima, gráficos embebidos, o formato condicional), dime qué hojas necesitas y lo adapto.")
-
-
